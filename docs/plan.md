@@ -40,7 +40,7 @@
 
 - [x] ディレクトリ構成の作成（`app/`, `server/`, `scripts/`。CLAUDE.md §2）
 - [x] `.gitignore`（`secrets/`, `data/`, ビルド成果物）
-- [ ] `server/go.mod`（Go 1.22+）と `cmd/rmapp/main.go` の最小起動
+- [x] `server/go.mod`（Go 1.22+）と `cmd/rmapp/main.go` の最小起動
 - [ ] `server/Makefile`（`build` / `test-unit` / `test-api` ターゲット）
 - [ ] `scripts/generate-secrets.sh`（`session_key.txt` / `kek.txt`、mode 600、
       冪等、確認リテラル不要の生成のみ）
