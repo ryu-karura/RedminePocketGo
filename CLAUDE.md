@@ -314,8 +314,10 @@ this file, never a second source of truth.
 
 Plus the generally available skills: `superpowers-dev:*` (brainstorming,
 writing-plans, TDD, systematic-debugging, verification-before-completion,
-code review pair), `frontend-design`, `design:accessibility-review`,
-`design:ux-copy`, `elements-of-style:writing-clearly-and-concisely`.
+code review pair), `code-review` (the harness-provided diff reviewer used
+as the phase quality gate — see the `implement` skill), `frontend-design`,
+`design:accessibility-review`, `design:ux-copy`,
+`elements-of-style:writing-clearly-and-concisely`.
 
 ---
 

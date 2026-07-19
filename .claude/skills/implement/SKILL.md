@@ -44,6 +44,11 @@ completion criteria. Exactly one phase may be 進行中 (in progress) at a time.
 - **Quality gate**: after the last task of a phase is checked, run the
   `code-review` skill (medium effort) over the phase's diff and fix every
   CONFIRMED finding before flipping the phase status to 完了.
+  `code-review` is provided by the Claude Code harness (a generally
+  available skill, CLAUDE.md §7), not defined under `.claude/skills/`.
+  If it is unavailable in the running environment, do an equivalent
+  self-review pass over the phase diff and note that substitution in the
+  自動実行ログ row.
 - Flip the phase status in the フェーズ一覧 table in the same commit as the
   last task, then promote the next phase when work on it starts.
 - The 地図表示 (map) row stays untouched until the user explicitly asks.
