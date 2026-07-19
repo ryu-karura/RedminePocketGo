@@ -61,7 +61,7 @@
       （flag > env `RMAPP_` > file > 既定値）。必須キー欠落はキー名付きで
       起動中止（Design.md §10）
 - [x] `server/config/config.yaml` の雛形（コメントは日本語）
-- [ ] `internal/store`: SQLite 接続と migrations
+- [x] `internal/store`: SQLite 接続と migrations
       （users / credentials / redmine_credentials / sessions /
       enrollment_codes / webauthn_challenges。Design.md §5）
 - [ ] `internal/httpapi`: エラーエンベロープとエラーコード表（Design.md §6.5）
