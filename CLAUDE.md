@@ -1,312 +1,337 @@
 # CLAUDE.md
 
 Project rules for AI agents. This file is the single source of truth for
-machine-readable conventions. Human-facing documentation lives in
-`README.md` and `docs/` and is written in Japanese; **do not read, cite,
-mirror, or link those files from this document.**
+machine-readable conventions. Human-facing documentation (`README.md`,
+`docs/Design.md`, `docs/Setup.md`, `docs/Manual.md`) is written in Japanese;
+**do not read, cite, mirror, or link those files from this document.**
 
 ---
 
-## 1. Project identity
+## 1. What this project is
 
-A mobile-first HTML5 SPA that talks to an existing Redmine instance
-through a Go relay server. The relay owns authentication (WebAuthn /
-passkey) and holds Redmine API keys server-side. The browser never sees
-a Redmine API key.
+A mobile-first HTML5 SPA client for Redmine, plus a Go relay server that owns
+authentication (WebAuthn / passkey) and holds Redmine API keys server-side.
+The browser never sees a Redmine API key.
 
 ```
-[SPA: HTML5 / TypeScript]
-        | same-origin, HttpOnly session cookie
-[Go relay: auth + API proxy]
-        | X-Redmine-API-Key
-[Redmine + PostgreSQL (Docker)]
+client ──443──► Host Apache ──┬─ /redmine ──► redmine-web  (RedmineDocker stack)
+                (TLS, HSTS)   │
+                              └─ /        ──► rmapp (this repo: Go relay + SPA)
+                                                 │ X-Redmine-API-Key
+                                                 ▼
+                                              Redmine REST API (via /redmine)
 ```
+
+Two sibling repositories define the conventions this project follows:
+
+| Repo | Provides | What we inherit |
+|---|---|---|
+| `ryu-karura/RedmineDocker` | The Redmine 6.1.3 stack this app talks to | Ops conventions: file-based secrets, shell style, doc structure, Compose-dev / Quadlet-prod split |
+| `ryu-karura/IoTDesignTemplate` | SPA + Go server template | Frontend architecture, CSS token system, Go server package layout, config style |
+
+**Redmine itself is out of scope here.** This repo never modifies the
+RedmineDocker stack; it only connects to it. Facts we rely on: Redmine 6.1.3
+at sub-URI `/redmine` (dev: `http://localhost:8080/redmine/`), PostgreSQL 18 +
+PostGIS 3.6, `redmine_gtt` among the 13 baked-in plugins (geometry support
+exists from day one), REST API must be enabled in Redmine admin settings.
 
 ---
 
 ## 2. Repository layout
 
+Mirrors IoTDesignTemplate (`app/` + `server/`), not a React project.
+
 ```
 .
 ├── CLAUDE.md
 ├── README.md
-├── docs/
-│   ├── DESIGN.md
-│   ├── SETUP.md
-│   └── MANUAL.md
-├── backend/
-│   ├── cmd/server/main.go
+├── docs/                      # Design.md / Setup.md / Manual.md (Japanese)
+├── app/                       # frontend SPA (vanilla JS, no build step)
+│   ├── index.html             # shell only: topbar, nav, <main id="screens">, toast
+│   ├── screens/               # per-screen HTML fragments (no <section> wrapper)
+│   ├── js/
+│   │   ├── app.js             # ES module entry; SCREENS manifest; routing
+│   │   ├── common/            # shell.js, api.js, auth.js, tree.js, table.js, utils.js
+│   │   ├── screens/           # one <key>.js per screen exporting init<Name>()
+│   │   └── vendor/            # vendored libs (Tabulator; later MapLibre). No CDN.
+│   └── css/
+│       ├── tokens.css         # design tokens — the ONLY file allowed to contain hex
+│       ├── base.css
+│       ├── layout.css
+│       ├── components/        # one file per shared component
+│       ├── screens/           # only when a screen needs truly unique styles
+│       └── vendor/
+├── server/
+│   ├── cmd/rmapp/main.go
 │   ├── internal/
-│   │   ├── config/          # config load + validation
-│   │   ├── auth/            # WebAuthn ceremonies
-│   │   ├── session/         # cookie session store
-│   │   ├── credential/      # API key vault (encrypted)
-│   │   ├── proxy/           # Redmine relay + allowlist
-│   │   ├── redmine/         # typed Redmine client
-│   │   ├── httpx/           # middleware, error envelope
-│   │   └── store/           # SQLite/Postgres repositories
+│   │   ├── config/            # config.yaml load + validation
+│   │   ├── auth/              # WebAuthn ceremonies, sessions, login rate limiting
+│   │   ├── credential/        # encrypted Redmine API key vault
+│   │   ├── proxy/             # Redmine relay: allowlist + header injection
+│   │   ├── redmine/           # typed Redmine REST client (bootstrap, aggregation)
+│   │   ├── httpapi/           # handlers, middleware, error envelope
+│   │   ├── store/             # SQLite persistence (users, passkeys, sessions)
+│   │   └── webfs/             # static/embedded asset serving
+│   ├── config/config.yaml     # comments in Japanese
 │   ├── migrations/
-│   └── configs/config.example.yaml
-├── frontend/
-│   ├── src/
-│   │   ├── app/             # bootstrap, router, providers
-│   │   ├── pages/           # one folder per screen
-│   │   ├── components/      # shared presentational components
-│   │   ├── features/        # domain logic per feature
-│   │   ├── api/             # generated/hand-written API client
-│   │   ├── stores/          # state management
-│   │   ├── styles/          # design tokens, theme
-│   │   └── types/
-│   ├── public/
-│   └── index.html
-├── deploy/
-│   ├── docker-compose.yml
-│   └── redmine/             # Redmine container assets
-└── scripts/                 # operational shell scripts
+│   └── Makefile
+├── scripts/                   # generate-secrets.sh, backup.sh, restore.sh, test-stack.sh
+├── .claude/
+│   ├── rules/                 # frontend.md, server.md, docs.md (path-scoped)
+│   └── skills/                # setup, build, test, docs-sync
+└── secrets/                   # git-ignored; created by scripts/generate-secrets.sh
 ```
 
-Do not invent new top-level directories without an explicit request.
-
 ---
 
-## 3. Language and toolchain
+## 3. Frontend rules (`app/`)
 
-| Area | Choice | Notes |
+Inherited from IoTDesignTemplate; deviations are called out explicitly.
+
+### 3.1 Architecture
+
+- **Vanilla JS (ES6+ modules), no framework, no bundler, no build step.**
+  Never introduce React, Vue, Vite, npm dependencies, or TypeScript.
+- **Hash routing.** `js/app.js` holds the `SCREENS` manifest — the single
+  source of truth for every screen's `key`, `label`, and `init` function.
+  Fragments in `screens/<key>.html` are fetched at runtime into
+  `<section data-screen="<key>" class="screen">` under `<main id="screens">`.
+- **Deviation from the template:** navigation is mobile-first. The desktop
+  sidebar is secondary; on narrow viewports (≤900px) navigation is a slide-in
+  drawer (template's `initMobileMenu` pattern), and primary actions sit in
+  reach of the thumb. Screen flow is hierarchical
+  (projects → issues → issue detail) rather than a flat menu, so the drawer
+  lists top-level screens only and back-navigation uses the hash history.
+- Modal routes follow the template: `#modal-<key>` entries in the `MODALS`
+  array, opened via `js/common/modal.js`.
+- Because fragments load via `fetch`, the app must be served over HTTP by the
+  Go server — never opened as `file://`, never served by a dumb static server
+  (data comes from `/api/...`).
+
+### 3.2 Shared modules — always use, never bypass
+
+| Module | Rule |
+|---|---|
+| `js/common/api.js` | All HTTP goes through `apiGetJson` / `apiPostJson` / etc. Screens never call `fetch` directly. Every write request (POST/PUT/DELETE) sends `X-Requested-With: XMLHttpRequest` — the server rejects writes without it (CSRF check). |
+| `js/common/auth.js` | WebAuthn ceremony helpers: base64url ⇄ ArrayBuffer conversion, `navigator.credentials` calls, feature detection. Screens never touch `navigator.credentials` directly. |
+| `js/common/table.js` | Tabulator wrapper. Hand-rolled `<table>` rendering is forbidden. Project and issue trees use Tabulator's `dataTree` through this wrapper — extend the wrapper, don't call `window.Tabulator` in screens. |
+| `js/common/tree.js` | Pure functions turning Redmine's flat `parent.id` arrays into nested tree data for Tabulator. No DOM access in this module; it must be unit-testable in isolation. |
+| `js/common/utils.js` | Date/format helpers. Check here before writing a helper in a screen; duplicating logic across screens is forbidden. |
+
+Vendored libraries live under `js/js/vendor/` with their licenses; no CDN
+(deploy targets may be offline). Tabulator 6 now; MapLibre GL JS later for the
+map feature. Chart.js is NOT carried over — remove it from scope.
+
+### 3.3 Data flow and auth
+
+- On bootstrap `app.js` calls `GET /api/auth/me`; unauthenticated users get
+  the login screen. The available screens come from the server response —
+  the menu is filtered server-side, never assembled from client-side role
+  logic.
+- Session state lives in an HttpOnly cookie. **Never store tokens, keys, or
+  credentials in localStorage/sessionStorage/IndexedDB.** localStorage is
+  allowed only for: theme, tree expand/collapse state, list filters,
+  issue-comment drafts (cleared on logout).
+- Every list/detail screen implements four explicit states: loading
+  (skeleton), empty, error (with retry), populated.
+
+### 3.4 Styling
+
+- Token layering exactly as the template:
+  `tokens.css → base.css / layout.css → components/*.css → screens/*.css`.
+  **Hex values are legal only in `tokens.css`.** Everything else uses
+  `var(--...)`.
+- Reuse the template's Ocean Blue token set and names verbatim
+  (`--bg`, `--surface`, `--surface-2`, `--fg`, `--muted`, `--border`,
+  `--border-strong`, `--primary`, `--on-primary`, `--ok`, `--warn`, `--crit`,
+  `--*-soft`, `--space-*`, `--fs-*`, `--radius-*`, shadows). Light/dark via
+  the `dark` class on `<html>`, persisted in localStorage key `theme`, with
+  the FOUC-prevention inline script in `<head>` (the one permitted inline
+  script).
+- New tokens added by this project (define in `tokens.css`, both modes):
+  `--depth-1`..`--depth-5` (tree-level rail colors) and
+  `--status-new` / `--status-open` / `--status-closed` (issue status badges,
+  mapped from `--primary` / `--ok` family).
+- Semantic colors never carry meaning alone — always pair with an icon or
+  text label (template rule; also WCAG).
+- Touch targets ≥ 44×44 CSS px. Base styles target 360px viewport; widen
+  with `min-width` media queries only.
+- Element IDs camelCase; screen keys and CSS classes kebab-case. ISO8601
+  timestamps with explicit timezone (`+09:00`).
+- Interactive elements get `aria-label`; trees expose
+  `role="tree"` / `role="treeitem"`, `aria-expanded`, `aria-level`.
+
+### 3.5 Screens
+
+| key | Screen | Notes |
 |---|---|---|
-| Backend | Go 1.22+ | stdlib `net/http` + `chi` router only |
-| WebAuthn | `github.com/go-webauthn/webauthn` | no alternatives |
-| Backend DB | SQLite (default), PostgreSQL (optional) | accessed via `internal/store` only |
-| Frontend | TypeScript 5.x, Vite, React 18 | no CRA, no Next.js |
-| Styling | CSS Modules + CSS custom properties | no Tailwind, no CSS-in-JS runtime |
-| Map (future) | MapLibre GL JS | not Google Maps, not Leaflet |
-| Test (Go) | stdlib `testing` + `testify/require` | |
-| Test (TS) | Vitest + Testing Library | |
+| `login` | Login | passkey primary; enrollment-code path; Redmine-password bootstrap |
+| `projects` | Project list | parent/child tree preserved (Tabulator dataTree) |
+| `issues` | Issue list | tree preserved; filter row; closed collapsed by default |
+| `issue-detail` | Issue detail | inline field editing; comment composer |
+| `settings` | Settings | passkey/device management, Redmine link status, theme |
 
-Never add a dependency that duplicates something already listed.
+Future (do not implement until requested): map rendering of `redmine_gtt`
+point/line/polygon geometry with vendored MapLibre GL JS.
 
 ---
 
-## 4. Backend rules
+## 4. Server rules (`server/`)
+
+Follows IoTDesignTemplate's server layout and conventions; deviations noted.
 
 ### 4.1 Structure
 
-- `cmd/server/main.go` only wires dependencies and starts the server. No
-  business logic.
-- Every `internal/` package exposes an interface at its boundary.
-  Handlers depend on interfaces, never on concrete structs from another
-  package.
-- No global mutable state. No `init()` side effects. Configuration is
-  passed explicitly from `main`.
+- `cmd/rmapp/main.go` wires dependencies and starts the server; no business
+  logic.
+- Package boundaries as in §2. Handlers depend on interfaces; no global
+  mutable state; no `init()` side effects.
+- **Deviation:** the template pins Go 1.17 for embedded targets. This server
+  is **not** deployed to those targets and `go-webauthn/webauthn` requires a
+  modern toolchain — this module targets **Go 1.22+**. Do not port the 1.17
+  constraint here.
+- **Deviation:** the template keeps sessions in memory. This server persists
+  users, passkey credentials, AND sessions in SQLite (`internal/store`) —
+  passkeys are long-lived by nature and a restart must not log everyone out.
 
-### 4.2 HTTP
+### 4.2 HTTP conventions
 
-- All responses are JSON. Errors use one envelope:
-
-  ```json
-  { "error": { "code": "invalid_credential", "message": "..." } }
-  ```
-
-  `code` is a stable snake_case identifier; `message` is for logs and
-  developers, not for direct display.
-- Every handler must accept `context.Context` from the request and
-  propagate it to all downstream calls.
-- Middleware order is fixed: `RequestID → RecoverPanic → AccessLog →
-  CORS(noop for same-origin) → Session → CSRF → Handler`.
+- JSON everywhere; single error envelope
+  `{ "error": { "code": "snake_case_id", "message": "for developers" } }`.
+- CSRF: cookie is `SameSite=Lax` and every state-changing endpoint requires
+  the `X-Requested-With: XMLHttpRequest` header (template convention, kept
+  instead of a token scheme).
+- Login and passkey ceremonies are rate-limited (template pattern: lock after
+  5 consecutive failures for 60s; constant-time behavior for unknown users —
+  keep the dummy-hash trick for the password-bootstrap path).
+- Middleware order: `RequestID → RecoverPanic → AccessLog → Session →
+  RequireXHRForWrites → Handler`.
+- Session model uses the template's two-axis timeout: idle timeout and
+  absolute timeout, both configurable.
 
 ### 4.3 Relay / proxy
 
-- The Redmine proxy uses an **explicit allowlist** of
-  `(method, path pattern)` pairs. A request that does not match returns
-  `404`. Never proxy by prefix alone.
-- The allowlist lives in one file, `internal/proxy/allowlist.go`, as a
-  single declarative slice.
-- The relay injects `X-Redmine-API-Key` in the proxy director. Any
-  inbound request carrying that header is rejected with `400` before it
-  reaches the director.
-- Never forward inbound `Authorization`, `Cookie`, or
-  `X-Redmine-Switch-User` headers to Redmine.
-- Redmine 5xx must be surfaced as `502` with `code: "upstream_error"`,
-  never as a naked passthrough.
+- Explicit allowlist of `(method, path pattern)` pairs in one declarative
+  slice (`internal/proxy/allowlist.go`). Non-matching → 404. Never proxy by
+  prefix.
+- The relay injects `X-Redmine-API-Key`; an inbound request carrying that
+  header is rejected with 400. Never forward inbound `Authorization`,
+  `Cookie`, or `X-Redmine-Switch-User`.
+- Remember the sub-URI: every upstream path is
+  `<redmine.base_url>` + `/redmine` + `<api path>` — the sub-URI comes from
+  config, never hardcoded in the client or handlers.
+- Upstream 5xx surfaces as 502 `upstream_error`; upstream 401 marks the
+  stored credential invalid and returns 409 `redmine_credential_invalid`.
 
 ### 4.4 Credentials
 
-- Redmine API keys are stored encrypted with AES-256-GCM. The key
-  encryption key comes from configuration and is never written to logs,
-  errors, or responses.
-- A stored credential is keyed by `(user_id)`, not by device. Devices
-  (passkeys) are separate rows linked to the same user. Any passkey
-  belonging to a user unlocks that user's single Redmine API key.
-- A credential value must never appear in any struct that is JSON-
-  serialised toward the client. Enforce with a dedicated type whose
-  `MarshalJSON` returns `"[redacted]"`.
+- One Redmine API key per user (Redmine itself has exactly one per account);
+  passkeys are per-device rows linked to the user. Never model per-device API
+  keys.
+- API keys encrypted AES-256-GCM; KEK from config (value or file path),
+  never logged. The key-holding type's `MarshalJSON` returns `"[redacted]"`.
 
-### 4.5 Errors and logging
+### 4.5 Config
 
-- Wrap errors with `fmt.Errorf("...: %w", err)`. Never discard an error
-  with `_`.
-- Use `log/slog` with structured fields. Never log request bodies,
-  cookies, API keys, or WebAuthn challenge material.
-- `panic` is only permitted in `main` during startup wiring.
+- Single `server/config/config.yaml`, comments in Japanese, loaded and
+  validated once at startup; a missing required key is a fatal error naming
+  the key. Style follows the template (`listen`, `webroot`, `baseURL`,
+  `serveStatic`, `noCache`, `session.*`, `logLevel`) extended with
+  `webauthn.*`, `crypto.*`, `redmine.*`, `database.*`, `features.*`.
+- Precedence: flag > env (`RMAPP_` prefix) > file > default.
+- Secrets follow RedmineDocker's convention: **file-based, never committed,
+  never plain env vars.** `scripts/generate-secrets.sh` writes
+  `secrets/session_key.txt` and `secrets/kek.txt` (mode 600, git-ignored);
+  config references them by path (`*_file` keys).
 
-### 4.6 Tests
+### 4.6 Logging and errors
 
-- Every handler has a table-driven test covering: success, unauthorised,
-  malformed input, and upstream failure.
-- The Redmine client is tested against `httptest.Server`, never against a
-  live instance.
+- `log/slog`, structured. Never log bodies, cookies, session IDs, API keys,
+  or WebAuthn challenge material.
+- Wrap errors with `%w`; never discard with `_`. `panic` only in `main`
+  startup wiring.
+- User-visible Japanese error strings live in error values near their package
+  (template pattern), keyed to envelope codes.
 
----
+### 4.7 Tests
 
-## 5. Frontend rules
-
-### 5.1 Structure
-
-- One folder per page under `src/pages/`, containing the page component,
-  its styles, and page-local components only.
-- Anything used by two or more pages moves to `src/components/`.
-- API access happens only in `src/api/`. Components never call `fetch`
-  directly.
-- State: server state via TanStack Query; UI state via React state or
-  Zustand. Never duplicate server data into a global store.
-
-### 5.2 Rendering and data
-
-- All requests are same-origin and rely on the session cookie. Never
-  store tokens or keys in `localStorage`, `sessionStorage`, or
-  `IndexedDB`.
-- Every list view must handle four states explicitly: loading, empty,
-  error, and populated. A missing empty state is a defect.
-- Tree structures (projects, issues) are rendered from a flat array
-  transformed into a tree in a pure function under `src/features/`. Do
-  not build trees inside components.
-- Lists must be virtualised when they may exceed 200 rows.
-
-### 5.3 Styling
-
-- Colours, spacing, radii, and typography come exclusively from CSS
-  custom properties defined in `src/styles/tokens.css`. No literal hex
-  values, no magic pixel numbers in component styles.
-- Mobile-first: base styles target a 360px viewport; widen with
-  `min-width` media queries only.
-- Touch targets are at least 44×44 CSS pixels.
-- Colour is never the only carrier of meaning; pair it with an icon or
-  text label.
-- Contrast must meet WCAG 2.1 AA (4.5:1 for body text).
-
-### 5.4 Accessibility
-
-- Every interactive element is reachable and operable by keyboard.
-- Tree views use `role="tree"` / `role="treeitem"` with `aria-expanded`
-  and `aria-level`.
-- Focus is moved deliberately after navigation and after modal open and
-  close.
-
-### 5.5 Prohibited
-
-- No `dangerouslySetInnerHTML` without sanitisation through a single
-  shared helper.
-- No inline `<script>` in `index.html`.
-- No `any` in TypeScript. Use `unknown` and narrow.
+- Table-driven handler tests: success / unauthenticated / malformed /
+  upstream failure. Redmine client tested against `httptest.Server` only.
+- `internal/httpapi` tests are the API suite; everything else is the unit
+  suite (template's split). Makefile targets: `test-unit`, `test-api`.
 
 ---
 
-## 6. Screens
+## 5. Shell scripts (`scripts/`)
 
-| Route | Screen | Notes |
-|---|---|---|
-| `/login` | Login | passkey primary, password fallback for bootstrap |
-| `/projects` | Project list | parent/child tree preserved |
-| `/projects/:id/issues` | Issue list | parent/child tree preserved |
-| `/issues/:id` | Issue detail | |
-| `/settings` | Settings | passkey management, API key linkage |
+RedmineDocker's conventions apply verbatim:
 
-Future (do not implement until requested): map rendering of point, line,
-and polygon geometry for projects and issues, sourced from the
-`redmine_gtt` plugin.
-
----
-
-## 7. Configuration
-
-- All configuration is loaded once at startup by `internal/config` and
-  validated there. A missing or invalid required value is a fatal
-  startup error with a message naming the offending key.
-- Precedence: command-line flag > environment variable > config file >
-  built-in default.
-- Environment variables are prefixed `RMAPP_`.
-- Secrets are accepted from environment variables or a file path, never
-  from a committed config file.
-- `configs/config.example.yaml` must stay in sync with the config struct.
-  Its comments are written in Japanese.
+- bash, `set -euo pipefail`, Japanese header comment block (purpose, usage,
+  prerequisites), Japanese user-facing output.
+- `shellcheck scripts/*.sh` before committing shell changes.
+- `log()`/`die()` helpers with timestamps; destructive actions require a
+  typed confirmation literal (e.g. `RESTORE`).
+- Idempotent where possible; never require a specific working directory.
+- `test-stack.sh` is the integration test: boots the server against a running
+  RedmineDocker dev stack and checks login page, health endpoints, and one
+  allowlisted proxy round-trip.
 
 ---
 
-## 8. Shell scripts
+## 6. Documentation ownership
 
-- Every script under `scripts/` starts with `#!/usr/bin/env bash` and
-  `set -euo pipefail`.
-- Comments and user-facing `echo` output are written in Japanese.
-- Each script begins with a Japanese header comment stating its purpose,
-  usage, and prerequisites.
-- Scripts are idempotent where possible and must not require being run
-  from a specific working directory.
-
----
-
-## 9. Commits and changes
-
-- Conventional Commits. Subject line ≤ 50 characters.
-- Scopes: `backend`, `frontend`, `deploy`, `docs`, `scripts`.
-- One logical change per commit. Do not mix formatting with behaviour.
-- When behaviour changes, update the affected documentation in the same
-  commit.
-
----
-
-## 10. Documentation ownership
-
-Each human-facing document owns a distinct scope. Do not duplicate
-content across them; cross-reference instead.
-
-| File | Scope |
+| File | Owns |
 |---|---|
 | `README.md` | overview, quick start, links |
-| `docs/DESIGN.md` | architecture, data model, API, screens, config items |
-| `docs/SETUP.md` | build and deploy procedures, config values |
-| `docs/MANUAL.md` | day-to-day operation and end-user procedures |
+| `docs/Design.md` | architecture, data model, API, screens, config catalog |
+| `docs/Setup.md` | build/deploy procedures, config values |
+| `docs/Manual.md` | operations and end-user procedures |
+| `CLAUDE.md` | machine-facing conventions only |
+| `.claude/rules/*.md` | path-scoped detail rules (frontend/server/docs), template-style |
 
-This file (`CLAUDE.md`) owns machine-facing conventions only and must
-not restate architecture decisions in detail — reference the concepts,
-not the prose.
+No duplication across files; cross-reference instead. When behaviour changes,
+update the affected docs in the same commit (both reference repos enforce
+this; so do we). `.github/copilot-instructions.md`, if added, is a pointer to
+this file, never a second source of truth.
 
 ---
 
-## 11. Related skills
+## 7. Skills
 
-Skills expected to be available to agents working on this repository:
+`.claude/skills/` planned for this repo (patterned after both reference
+repos):
 
-| Skill | Use for |
+| Skill | Purpose |
 |---|---|
-| `superpowers-dev:brainstorming` | before any new feature |
-| `superpowers-dev:writing-plans` | multi-step work |
-| `superpowers-dev:test-driven-development` | all implementation |
-| `superpowers-dev:systematic-debugging` | any bug or test failure |
-| `superpowers-dev:verification-before-completion` | before claiming done |
-| `superpowers-dev:requesting-code-review` | before merge |
-| `superpowers-dev:receiving-code-review` | acting on feedback |
-| `superpowers-dev:using-git-worktrees` | isolated feature work |
-| `frontend-design` | screen and visual design work |
-| `design:accessibility-review` | before shipping any screen |
-| `design:design-system` | token and component consistency |
-| `design:ux-copy` | button, error, and empty-state wording |
-| `elements-of-style:writing-clearly-and-concisely` | any prose |
+| `setup` | boot RedmineDocker dev stack + this server for local work |
+| `build` | build server, run shellcheck, verify static assets |
+| `test` | which of test-unit / test-api / test-stack to run per change |
+| `docs-sync` | change-type → document map; keeps §6 honest |
+| `frontend-rules` | pointer into `.claude/rules/frontend.md` for screen work |
+
+Plus the generally available skills: `superpowers-dev:*` (brainstorming,
+writing-plans, TDD, systematic-debugging, verification-before-completion,
+code review pair), `frontend-design`, `design:accessibility-review`,
+`design:ux-copy`, `elements-of-style:writing-clearly-and-concisely`.
 
 ---
 
-## 12. Non-negotiables
+## 8. Git workflow
+
+- Conventional Commits, subject ≤ 50 chars; scopes: `app`, `server`,
+  `scripts`, `docs`.
+- One logical change per commit; don't mix formatting with behaviour.
+- Work on the assigned feature branch; do not open a pull request unless
+  explicitly asked (RedmineDocker convention).
+
+---
+
+## 9. Non-negotiables
 
 1. No Redmine API key ever reaches the browser.
 2. No proxy path outside the allowlist.
-3. No secret in logs, errors, or responses.
-4. No new dependency that duplicates an existing one.
+3. No secret in logs, errors, responses, or committed files — secrets are
+   files under `secrets/`, generated by script.
+4. No frameworks, bundlers, or CDNs in `app/`; hex only in `tokens.css`.
 5. No implementation without a failing test first.
+6. This repo never modifies the RedmineDocker stack.
