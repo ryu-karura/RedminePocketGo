@@ -24,7 +24,7 @@
 | # | フェーズ | 状態 |
 |---|---|---|
 | 0 | 骨組み（リポジトリ構造と開発ループ） | 完了 |
-| 1 | サーバー基盤（config / store / httpapi / webfs） | 未着手 |
+| 1 | サーバー基盤（config / store / httpapi / webfs） | 進行中 |
 | 2 | 認証（WebAuthn / セッション / ブートストラップ / 端末管理） | 未着手 |
 | 3 | API キー保管庫と中継（credential / proxy） | 未着手 |
 | 4 | Redmine クライアントと集約 API | 未着手 |
@@ -57,7 +57,7 @@
 
 目的: 全ハンドラが乗る土台（設定・永続化・ミドルウェア・静的配信）を作る。
 
-- [ ] `internal/config`: config.yaml の読み込み・検証・優先順位
+- [x] `internal/config`: config.yaml の読み込み・検証・優先順位
       （flag > env `RMAPP_` > file > 既定値）。必須キー欠落はキー名付きで
       起動中止（Design.md §10）
 - [ ] `server/config/config.yaml` の雛形（コメントは日本語）
