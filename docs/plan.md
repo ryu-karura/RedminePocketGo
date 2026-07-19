@@ -18,7 +18,7 @@
 
 | # | フェーズ | 状態 |
 |---|---|---|
-| 0 | 骨組み（リポジトリ構造と開発ループ） | 進行中 |
+| 0 | 骨組み（リポジトリ構造と開発ループ） | 完了 |
 | 1 | サーバー基盤（config / store / httpapi / webfs） | 未着手 |
 | 2 | 認証（WebAuthn / セッション / ブートストラップ / 端末管理） | 未着手 |
 | 3 | API キー保管庫と中継（credential / proxy） | 未着手 |
@@ -42,7 +42,7 @@
 - [x] `.gitignore`（`secrets/`, `data/`, ビルド成果物）
 - [x] `server/go.mod`（Go 1.22+）と `cmd/rmapp/main.go` の最小起動
 - [x] `server/Makefile`（`build` / `test-unit` / `test-api` ターゲット）
-- [ ] `scripts/generate-secrets.sh`（`session_key.txt` / `kek.txt`、mode 600、
+- [x] `scripts/generate-secrets.sh`（`session_key.txt` / `kek.txt`、mode 600、
       冪等、確認リテラル不要の生成のみ）
 
 完了条件: `make build` 成功。`make test-unit` が実行できる（0 件で可）。
