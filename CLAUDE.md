@@ -45,7 +45,7 @@ Mirrors IoTDesignTemplate (`app/` + `server/`), not a React project.
 .
 ├── CLAUDE.md
 ├── README.md
-├── docs/                      # Design.md / Setup.md / Manual.md (Japanese)
+├── docs/                      # Design.md / Setup.md / Manual.md (Japanese); plan.md (implementation plan)
 ├── app/                       # frontend SPA (vanilla JS, no build step)
 │   ├── index.html             # shell only: topbar, nav, <main id="screens">, toast
 │   ├── screens/               # per-screen HTML fragments (no <section> wrapper)
@@ -78,7 +78,7 @@ Mirrors IoTDesignTemplate (`app/` + `server/`), not a React project.
 ├── scripts/                   # generate-secrets.sh, backup.sh, restore.sh, test-stack.sh
 ├── .claude/
 │   ├── rules/                 # frontend.md, server.md, docs.md (path-scoped)
-│   └── skills/                # setup, build, test, docs-sync
+│   └── skills/                # implement, test (+ LESSONS.md), setup, build, docs-sync
 └── secrets/                   # git-ignored; created by scripts/generate-secrets.sh
 ```
 
@@ -286,8 +286,10 @@ RedmineDocker's conventions apply verbatim:
 | `docs/Design.md` | architecture, data model, API, screens, config catalog |
 | `docs/Setup.md` | build/deploy procedures, config values |
 | `docs/Manual.md` | operations and end-user procedures |
+| `docs/plan.md` | staged implementation plan + progress checklist (maintained per the `implement` skill) |
 | `CLAUDE.md` | machine-facing conventions only |
 | `.claude/rules/*.md` | path-scoped detail rules (frontend/server/docs), template-style |
+| `.claude/skills/test/LESSONS.md` | prevention rules distilled from test failures (maintained per the `test` skill) |
 
 No duplication across files; cross-reference instead. When behaviour changes,
 update the affected docs in the same commit (both reference repos enforce
@@ -298,14 +300,15 @@ this file, never a second source of truth.
 
 ## 7. Skills
 
-`.claude/skills/` planned for this repo (patterned after both reference
-repos):
+`.claude/skills/` for this repo (patterned after both reference repos).
+`implement` and `test` exist; the rest are planned:
 
 | Skill | Purpose |
 |---|---|
+| `implement` | **mandatory before any implementation work**: plan-driven staged workflow against `docs/plan.md` — one phase at a time, checkbox per commit |
+| `test` | which of test-unit / test-api / node --test / test-stack to run per change; failure → prevention-rule loop into `LESSONS.md` |
 | `setup` | boot RedmineDocker dev stack + this server for local work |
 | `build` | build server, run shellcheck, verify static assets |
-| `test` | which of test-unit / test-api / test-stack to run per change |
 | `docs-sync` | change-type → document map; keeps §6 honest |
 | `frontend-rules` | pointer into `.claude/rules/frontend.md` for screen work |
 
@@ -335,3 +338,8 @@ code review pair), `frontend-design`, `design:accessibility-review`,
 4. No frameworks, bundlers, or CDNs in `app/`; hex only in `tokens.css`.
 5. No implementation without a failing test first.
 6. This repo never modifies the RedmineDocker stack.
+7. No implementation outside the current phase of `docs/plan.md`; progress
+   is checked off in the same commit (`implement` skill).
+8. Unexpected test failures leave a prevention rule in
+   `.claude/skills/test/LESSONS.md` (`test` skill); LESSONS.md is read
+   before every task.
