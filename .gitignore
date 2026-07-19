@@ -1,0 +1,13 @@
+# シークレット（scripts/generate-secrets.sh が生成。コミット禁止）
+secrets/
+
+# 実行時データ（SQLite データベースなど）
+data/
+server/data/
+
+# ビルド成果物
+server/bin/
+
+# エディタ・OS
+.DS_Store
+*.swp

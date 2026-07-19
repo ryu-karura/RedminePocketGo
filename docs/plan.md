@@ -18,7 +18,7 @@
 
 | # | フェーズ | 状態 |
 |---|---|---|
-| 0 | 骨組み（リポジトリ構造と開発ループ） | 未着手 |
+| 0 | 骨組み（リポジトリ構造と開発ループ） | 進行中 |
 | 1 | サーバー基盤（config / store / httpapi / webfs） | 未着手 |
 | 2 | 認証（WebAuthn / セッション / ブートストラップ / 端末管理） | 未着手 |
 | 3 | API キー保管庫と中継（credential / proxy） | 未着手 |
@@ -38,8 +38,8 @@
 目的: リポジトリ構造を CLAUDE.md §2 のとおり作り、build / test の
 開発ループを成立させる。
 
-- [ ] ディレクトリ構成の作成（`app/`, `server/`, `scripts/`。CLAUDE.md §2）
-- [ ] `.gitignore`（`secrets/`, `data/`, ビルド成果物）
+- [x] ディレクトリ構成の作成（`app/`, `server/`, `scripts/`。CLAUDE.md §2）
+- [x] `.gitignore`（`secrets/`, `data/`, ビルド成果物）
 - [ ] `server/go.mod`（Go 1.22+）と `cmd/rmapp/main.go` の最小起動
 - [ ] `server/Makefile`（`build` / `test-unit` / `test-api` ターゲット）
 - [ ] `scripts/generate-secrets.sh`（`session_key.txt` / `kek.txt`、mode 600、
