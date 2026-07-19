@@ -206,3 +206,13 @@ func TestLoadUnknownOverrideKey(t *testing.T) {
 		t.Fatal("want error for unknown override key, got nil")
 	}
 }
+
+func TestBaseURLMustStartWithSlash(t *testing.T) {
+	_, err := Load(writeConfig(t, validYAML+"baseURL: rmapp\n"), nil, noEnv)
+	if err == nil || !strings.Contains(err.Error(), "baseURL") {
+		t.Fatalf("baseURL without leading slash: err = %v; want error naming baseURL", err)
+	}
+	if _, err := Load(writeConfig(t, validYAML+"baseURL: /rmapp\n"), nil, noEnv); err != nil {
+		t.Fatalf("valid /rmapp rejected: %v", err)
+	}
+}

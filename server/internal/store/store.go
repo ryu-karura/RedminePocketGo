@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strings"
 
 	_ "modernc.org/sqlite" // 純 Go の SQLite ドライバ（cgo 不要）
 
@@ -19,25 +20,31 @@ type Store struct {
 }
 
 // Open は DSN で SQLite を開く。マイグレーションは適用しない（Migrate を
-// 明示的に呼ぶ）。SQLite は書き込みが直列のため接続数は 1 に固定し、
-// 外部キー制約と busy_timeout を接続に対して有効化する。
+// 明示的に呼ぶ）。SQLite は書き込みが直列のため接続数は 1 に固定する。
+// プラグマは接続単位で失われるため Exec ではなく DSN に載せ、再接続後も
+// 外部キー制約・busy_timeout・WAL が必ず効くようにする。
 func Open(dsn string) (*Store, error) {
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", withPragmas(dsn))
 	if err != nil {
 		return nil, fmt.Errorf("store: DB を開けません: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	for _, pragma := range []string{
-		"PRAGMA foreign_keys = ON",
-		"PRAGMA busy_timeout = 5000",
-		"PRAGMA journal_mode = WAL",
-	} {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("store: %s に失敗しました: %w", pragma, err)
-		}
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: DB に接続できません: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+func withPragmas(dsn string) string {
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return dsn + sep +
+		"_pragma=foreign_keys(1)" +
+		"&_pragma=busy_timeout(5000)" +
+		"&_pragma=journal_mode(WAL)"
 }
 
 // DB は下位層の *sql.DB を返す。リポジトリ実装（後続フェーズ）とテストが使う。
@@ -57,6 +64,25 @@ func (s *Store) Migrate() error {
 		return fmt.Errorf("store: schema_migrations の作成に失敗しました: %w", err)
 	}
 
+	applied := map[string]bool{}
+	rows, err := s.db.Query("SELECT version FROM schema_migrations")
+	if err != nil {
+		return fmt.Errorf("store: 適用状態の取得に失敗しました: %w", err)
+	}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			rows.Close()
+			return fmt.Errorf("store: 適用状態の読み取りに失敗しました: %w", err)
+		}
+		applied[v] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("store: 適用状態の走査に失敗しました: %w", err)
+	}
+	rows.Close()
+
 	names, err := fs.Glob(migrations.FS, "*.sql")
 	if err != nil {
 		return fmt.Errorf("store: マイグレーション一覧の取得に失敗しました: %w", err)
@@ -64,13 +90,7 @@ func (s *Store) Migrate() error {
 	sort.Strings(names)
 
 	for _, name := range names {
-		var applied int
-		if err := s.db.QueryRow(
-			"SELECT COUNT(*) FROM schema_migrations WHERE version = ?", name,
-		).Scan(&applied); err != nil {
-			return fmt.Errorf("store: 適用状態の確認に失敗しました (%s): %w", name, err)
-		}
-		if applied > 0 {
+		if applied[name] {
 			continue
 		}
 

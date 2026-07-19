@@ -217,6 +217,10 @@ func (c *Config) validate() error {
 		}
 	}
 
+	if c.BaseURL != "" && !strings.HasPrefix(c.BaseURL, "/") {
+		return fmt.Errorf("config: baseURL %q は \"/\" で始まらなければなりません", c.BaseURL)
+	}
+
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
 	default:

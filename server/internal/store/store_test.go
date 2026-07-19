@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"path/filepath"
 	"testing"
 )
@@ -77,5 +78,23 @@ func TestSessionsSchemaHoldsHashedIDOnly(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("insert session: %v", err)
+	}
+}
+
+func TestConnectionPragmasSurviveReconnect(t *testing.T) {
+	// プラグマは接続単位で消える。Open は DSN に載せて全接続に効かせること。
+	s := openTestStore(t)
+	for _, tt := range []struct{ pragma, want string }{
+		{"foreign_keys", "1"},
+		{"busy_timeout", "5000"},
+		{"journal_mode", "wal"},
+	} {
+		var got string
+		if err := s.DB().QueryRow("PRAGMA " + tt.pragma).Scan(&got); err != nil {
+			t.Fatalf("PRAGMA %s: %v", tt.pragma, err)
+		}
+		if strings.ToLower(got) != tt.want {
+			t.Errorf("PRAGMA %s = %q; want %q", tt.pragma, got, tt.want)
+		}
 	}
 }

@@ -113,7 +113,8 @@ func TestSessionMiddleware(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			seen = nil
-			h := Session(tt.resolver, "rmapp_session")(inner)
+			logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+			h := Session(tt.resolver, "rmapp_session", logger)(inner)
 			req := httptest.NewRequest("GET", "/x", nil)
 			if tt.cookie != "" {
 				req.AddCookie(&http.Cookie{Name: "rmapp_session", Value: tt.cookie})

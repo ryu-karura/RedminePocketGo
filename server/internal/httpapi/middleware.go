@@ -34,7 +34,7 @@ type SessionResolver interface {
 func Chain(logger *slog.Logger, resolver SessionResolver, cookieName string) func(http.Handler) http.Handler {
 	return func(h http.Handler) http.Handler {
 		h = RequireXHRForWrites(h)
-		h = Session(resolver, cookieName)(h)
+		h = Session(resolver, cookieName, logger)(h)
 		h = AccessLog(logger)(h)
 		h = RecoverPanic(logger)(h)
 		h = RequestID(h)
@@ -132,8 +132,8 @@ func (s *statusRecorder) WriteHeader(code int) {
 
 // Session は Cookie のセッション値を解決してコンテキストに載せる。
 // 未認証はエラーにしない（許可の判定はハンドラ側の責務）。解決自体の
-// 失敗（DB 障害など）のみ 500 を返す。
-func Session(resolver SessionResolver, cookieName string) func(http.Handler) http.Handler {
+// 失敗（DB 障害など）のみ、原因を記録した上で 500 を返す。
+func Session(resolver SessionResolver, cookieName string, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			c, err := r.Cookie(cookieName)
@@ -143,6 +143,11 @@ func Session(resolver SessionResolver, cookieName string) func(http.Handler) htt
 			}
 			info, err := resolver.ResolveSession(r.Context(), c.Value)
 			if err != nil {
+				// セッション値そのものは記録しない（CLAUDE.md §4.6）。
+				logger.Error("session resolution failed",
+					"error", err,
+					"request_id", RequestIDFrom(r.Context()),
+				)
 				WriteError(w, CodeInternalError, "session resolution failed")
 				return
 			}

@@ -10,6 +10,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/ryu-karura/RedminePocketGo/server/internal/config"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/httpapi"
@@ -88,6 +91,30 @@ func run(out io.Writer, args []string) error {
 
 	handler := httpapi.Chain(logger, noopResolver{}, cfg.Session.CookieName)(mux)
 
-	logger.Info("rmapp starting", "listen", cfg.Listen, "version", version)
-	return http.ListenAndServe(cfg.Listen, handler)
+	srv := &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	// SIGINT / SIGTERM で受け付けを止め、処理中のリクエストを待ってから
+	// 返る（defer の st.Close を確実に走らせる）。
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger.Info("rmapp starting", "listen", cfg.Listen, "version", version)
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		logger.Info("rmapp shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	}
 }

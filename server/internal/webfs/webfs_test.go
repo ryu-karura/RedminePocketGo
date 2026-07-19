@@ -93,3 +93,13 @@ func TestMissingFileIs404(t *testing.T) {
 		t.Errorf("status = %d; want 404", rec.Code)
 	}
 }
+
+func TestDirectoryListingIsNotServed(t *testing.T) {
+	// index.html のないディレクトリの一覧生成はアセット構成の露出になる。
+	h := Handler(writeWebroot(t), "", true)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/js/", nil))
+	if rec.Code != 404 {
+		t.Errorf("GET /js/ status = %d; want 404 (directory listing must be disabled)", rec.Code)
+	}
+}

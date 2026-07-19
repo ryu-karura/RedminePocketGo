@@ -3,7 +3,9 @@
 package webfs
 
 import (
+	"io/fs"
 	"net/http"
+	"path"
 	"strings"
 )
 
@@ -12,7 +14,7 @@ import (
 //   - noCache: true なら全レスポンスに Cache-Control: no-store を付与する
 //     （テンプレートの noCache 設定の踏襲。開発時のキャッシュ事故防止）。
 func Handler(webroot, baseURL string, noCache bool) http.Handler {
-	var h http.Handler = http.FileServer(http.Dir(webroot))
+	var h http.Handler = http.FileServer(noListingDir{http.Dir(webroot)})
 
 	if baseURL != "" {
 		prefix := strings.TrimSuffix(baseURL, "/")
@@ -38,4 +40,31 @@ func Handler(webroot, baseURL string, noCache bool) http.Handler {
 		})
 	}
 	return h
+}
+
+// noListingDir は index.html のないディレクトリへのアクセスを 404 にする。
+// http.FileServer の自動ディレクトリ一覧はアセット構成の露出になるため。
+type noListingDir struct {
+	base http.Dir
+}
+
+func (d noListingDir) Open(name string) (http.File, error) {
+	f, err := d.base.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if info.IsDir() {
+		idx, err := d.base.Open(path.Join(name, "index.html"))
+		if err != nil {
+			f.Close()
+			return nil, fs.ErrNotExist
+		}
+		idx.Close()
+	}
+	return f, nil
 }
