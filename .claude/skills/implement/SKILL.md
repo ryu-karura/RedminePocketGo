@@ -41,9 +41,66 @@ completion criteria. Exactly one phase may be 進行中 (in progress) at a time.
 
 - A phase is 完了 only when every task is checked AND its 完了条件
   (completion criteria) are verifiably met — run them, don't assume.
+- **Quality gate**: after the last task of a phase is checked, run the
+  `code-review` skill (medium effort) over the phase's diff and fix every
+  CONFIRMED finding before flipping the phase status to 完了.
 - Flip the phase status in the フェーズ一覧 table in the same commit as the
   last task, then promote the next phase when work on it starts.
 - The 地図表示 (map) row stays untouched until the user explicitly asks.
+
+## Unattended runs（無人実行）
+
+Scheduled-trigger runs (no human watching) follow every rule above, plus
+the rules in this section.
+
+### PR discovery comes first
+
+1. **Find the open tracking PR before anything else**: list PRs in
+   `ryu-karura/RedminePocketGo` and look for an open PR whose head branch
+   matches `claude/*` (base `main`); if several, take the most recently
+   updated. If one exists, work on its head branch, and process its review
+   comments and CI failures BEFORE picking up new plan tasks.
+2. **If the tracking PR is closed or merged, never reuse it or its
+   branch**: start a fresh branch `claude/plan-phase-<N>` (N = current
+   phase number) from the latest `origin/main`, and create a NEW pull
+   request after the first push.
+3. Keep the session subscribed to the tracking PR
+   (`subscribe_pr_activity`) so review comments and CI failures are
+   handled between scheduled runs, not only when the trigger fires.
+
+### Safety rules
+
+- **Run start**: `git fetch origin`, then fast-forward the working branch
+  to its origin counterpart. If the branch has diverged, stop and report
+  instead of working. Force-pushes and history rewrites are always
+  forbidden.
+- **Run end**: leave the worktree clean. Never commit a half-done task —
+  discard it and record the reason as a row in plan.md's 変更履歴.
+  Never push while any mapped test suite is red; CI
+  (`.github/workflows/ci.yml`) is the independent check, not a substitute
+  for running the suites locally first.
+- One run implements at most up to the current phase's completion; do not
+  roll into the next phase in the same run.
+
+### Run log and stall detection
+
+- Append one row to the 自動実行ログ table at the end of `docs/plan.md`
+  after every scheduled run (UTC time / phase / tasks completed / commits
+  / result), committed with the run's last change (or on its own if the
+  run produced no implementation commits — a no-progress row is still
+  recorded via a plan.md-only commit).
+- **Stall detection**: if the log shows two consecutive runs stuck on the
+  same task with zero new implementation commits, disable the scheduled
+  trigger (`update_trigger`, enabled=false) and report the cause and how
+  to resume.
+
+### Visibility
+
+- Rewrite the tracking PR's body so it carries the current phase-progress
+  table (`update_pull_request`); do not add PR comments for routine
+  progress.
+- Finish every run with a PushNotification summary: tasks completed,
+  phase status, next scheduled run, and any failures.
 
 ## Changing the plan
 
