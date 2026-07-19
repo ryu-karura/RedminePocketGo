@@ -64,7 +64,7 @@
 - [x] `internal/store`: SQLite 接続と migrations
       （users / credentials / redmine_credentials / sessions /
       enrollment_codes / webauthn_challenges。Design.md §5）
-- [ ] `internal/httpapi`: エラーエンベロープとエラーコード表（Design.md §6.5）
+- [x] `internal/httpapi`: エラーエンベロープとエラーコード表（Design.md §6.5）
 - [ ] `internal/httpapi`: ミドルウェア連鎖
       `RequestID → RecoverPanic → AccessLog → Session → RequireXHRForWrites`
 - [ ] `internal/webfs`: 静的配信、`noCache`、`baseURL` サブパス対応
