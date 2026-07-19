@@ -60,7 +60,7 @@
 - [x] `internal/config`: config.yaml の読み込み・検証・優先順位
       （flag > env `RMAPP_` > file > 既定値）。必須キー欠落はキー名付きで
       起動中止（Design.md §10）
-- [ ] `server/config/config.yaml` の雛形（コメントは日本語）
+- [x] `server/config/config.yaml` の雛形（コメントは日本語）
 - [ ] `internal/store`: SQLite 接続と migrations
       （users / credentials / redmine_credentials / sessions /
       enrollment_codes / webauthn_challenges。Design.md §5）

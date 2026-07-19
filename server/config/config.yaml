@@ -1,0 +1,57 @@
+# rmapp 設定ファイル（雛形）
+#
+# 起動時に一度だけ読み込まれ、その場で検証される。必須キーが欠けている
+# 場合は、キー名を示して起動を中止する。
+# 優先順位: コマンドライン引数 > 環境変数（接頭辞 RMAPP_）> このファイル > 既定値
+#   環境変数名はキーの階層を "_" で結んで大文字化したもの。
+#   例: session.idleTimeoutHours → RMAPP_SESSION_IDLETIMEOUTHOURS
+# 各項目の説明は docs/Design.md §10、設定手順は docs/Setup.md を参照。
+
+# ---- サーバー ----
+listen: ":8090"        # 待ち受けアドレス。Redmine 開発スタックの 8080 と重ねない
+baseURL: ""            # サブパス配信する場合のパス。空ならルート配信
+webroot: "../../app"   # SPA の配置先（サーバーバイナリからの相対パス可）
+serveStatic: true      # SPA を本サーバーから配信するか
+noCache: true          # キャッシュ抑止ヘッダーを全レスポンスに付与するか
+logLevel: "info"       # debug / info / warn / error
+
+# ---- セッション（二軸タイムアウト）----
+session:
+  idleTimeoutHours: 168      # 操作がない場合の失効（7 日）
+  absoluteTimeoutHours: 720  # ログインからの絶対失効（30 日）
+  secureCookie: true         # Secure 属性。localhost 検証時のみ false にする
+  cookieName: "rmapp_session"
+  secretFile: "../../secrets/session_key.txt"  # 必須。scripts/generate-secrets.sh が生成
+
+# ---- パスキー（WebAuthn）----
+webauthn:
+  rpId: "localhost"          # 必須。公開ドメイン名のみ（スキーム・ポート不可）。運用開始後は変更不可
+  rpName: "RedminePocketGo"  # 必須。認証時に端末が表示する名称
+  origins:                   # 必須。許可するオリジン（スキーム・ポート込み）
+    - "http://localhost:8090"
+  userVerification: "required"  # required / preferred / discouraged
+  challengeTTLMinutes: 5
+
+# ---- 暗号化（API キー保管庫）----
+crypto:
+  kekFile: "../../secrets/kek.txt"  # 必須。失うと保存済み API キーは復号不能
+  keyVersion: 1                     # 鍵ローテーションの世代
+
+# ---- Redmine 接続 ----
+redmine:
+  baseURL: "http://localhost:8080"  # 必須。Redmine の起点 URL
+  subURI: "/redmine"                # RedmineDocker の REDMINE_SUBURI と一致させる
+  timeoutSeconds: 10
+  maxRetries: 2
+  maxConcurrency: 8
+  pageSize: 100
+
+# ---- データベース ----
+database:
+  dsn: "file:../../data/rmapp.db?_pragma=foreign_keys(1)"  # 必須。SQLite の接続文字列
+
+# ---- 機能の有効化 ----
+features:
+  mapEnabled: false        # 地図機能（将来。指示があるまで false）
+  issueCreate: true        # チケット作成の可否
+  passwordBootstrap: true  # Redmine 認証での初回紐付け
