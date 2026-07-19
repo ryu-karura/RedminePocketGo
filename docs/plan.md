@@ -68,7 +68,7 @@
 - [x] `internal/httpapi`: ミドルウェア連鎖
       `RequestID → RecoverPanic → AccessLog → Session → RequireXHRForWrites`
 - [x] `internal/webfs`: 静的配信、`noCache`、`baseURL` サブパス対応
-- [ ] `log/slog` 構造化ログの初期化（禁止項目は CLAUDE.md §4.6）
+- [x] `log/slog` 構造化ログの初期化（禁止項目は CLAUDE.md §4.6）
 
 完了条件: `make test-unit` 緑。config の必須キー欠落・不正値のテーブル
 駆動テストがある。migrations が空 DB に適用できる。
