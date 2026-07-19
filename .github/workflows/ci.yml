@@ -1,0 +1,46 @@
+# CI: push / pull_request でビルドと全テストスイートを実行する。
+# 無人実行（定期トリガー）の独立検証がこのワークフローの主目的 —
+# テスト緑の判断をエージェントの自己申告に依存させない。
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  server:
+    name: server (build / test-unit / test-api)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+      - run: make build
+      - run: make test-unit
+      - run: make test-api
+
+  shellcheck:
+    name: shellcheck scripts/*.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck scripts/*.sh
+
+  frontend:
+    name: frontend (node --test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # app/js/tests/ はフェーズ 5 で作成される。存在チェックで先回りしておく。
+      - run: |
+          if [ -d app/js/tests ]; then
+            node --test app/js/tests/
+          else
+            echo "app/js/tests/ が未作成のためスキップ（docs/plan.md フェーズ 5）"
+          fi
