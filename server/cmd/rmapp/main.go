@@ -120,6 +120,7 @@ func run(out io.Writer, args []string) error {
 		Users:      st,
 		Limiter:    auth.NewRateLimiter(5, 60*time.Second),
 		Bootstrap:  bootstrapSvc,
+		Enrollment: auth.NewEnrollment(st, wa),
 		CookieName: cfg.Session.CookieName,
 	}).RegisterRoutes(apiMux)
 

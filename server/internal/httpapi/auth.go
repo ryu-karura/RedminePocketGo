@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/ryu-karura/RedminePocketGo/server/internal/store"
 )
@@ -43,6 +44,12 @@ type BootstrapService interface {
 	Run(ctx context.Context, login, password string) (optionsJSON []byte, challengeID string, err error)
 }
 
+// EnrollmentService は登録コードによる端末追加（auth.Enrollment が実装する）。
+type EnrollmentService interface {
+	IssueCode(ctx context.Context, userID string) (code string, expiresAt time.Time, err error)
+	Redeem(ctx context.Context, code string) (optionsJSON []byte, challengeID string, err error)
+}
+
 // AuthHandler は認証エンドポイント（Design.md §3.2）を提供する。
 type AuthHandler struct {
 	WebAuthn   WebAuthnService
@@ -50,6 +57,7 @@ type AuthHandler struct {
 	Users      UserGetter
 	Limiter    Limiter
 	Bootstrap  BootstrapService // nil なら機能無効（features.passwordBootstrap）
+	Enrollment EnrollmentService
 	CookieName string
 }
 
@@ -71,6 +79,60 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/auth/me", h.me)
 	mux.HandleFunc("POST /api/auth/logout", h.logout)
 	mux.HandleFunc("POST /api/auth/bootstrap", h.bootstrap)
+	mux.HandleFunc("POST /api/auth/enrollment-code", h.issueEnrollmentCode)
+	mux.HandleFunc("POST /api/auth/enroll", h.enroll)
+}
+
+// issueEnrollmentCode はログイン済み端末から 6 桁コードを発行する
+// （Design.md §3.4 手順 3）。
+func (h *AuthHandler) issueEnrollmentCode(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFrom(r.Context())
+	if sess == nil {
+		WriteError(w, CodeUnauthenticated, "login required")
+		return
+	}
+	code, expiresAt, err := h.Enrollment.IssueCode(r.Context(), sess.UserID)
+	if err != nil {
+		WriteError(w, CodeInternalError, "code issue failed")
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]string{
+		"code":      code,
+		"expiresAt": expiresAt.Format(time.RFC3339),
+	})
+}
+
+// enroll は新しい端末がコードと引き換えに登録セレモニーを開始する
+// （Design.md §3.4 手順 4-5）。
+func (h *AuthHandler) enroll(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Code == "" {
+		WriteError(w, CodeInvalidRequest, "code is required")
+		return
+	}
+	key := "enroll:" + limiterKey(r)
+	if h.Limiter != nil && !h.Limiter.Allow(key) {
+		WriteError(w, CodeRateLimited, "too many failed attempts")
+		return
+	}
+	options, challengeID, err := h.Enrollment.Redeem(r.Context(), body.Code)
+	if err != nil {
+		if errors.Is(err, ErrInvalidRequest) {
+			if h.Limiter != nil {
+				h.Limiter.Fail(key)
+			}
+			WriteError(w, CodeInvalidRequest, "invalid enrollment code")
+			return
+		}
+		WriteError(w, CodeInternalError, "enrollment failed")
+		return
+	}
+	if h.Limiter != nil {
+		h.Limiter.Succeed(key)
+	}
+	WriteJSON(w, http.StatusOK, ceremonyResponse{ChallengeID: challengeID, Options: options})
 }
 
 // bootstrap は Redmine 認証情報での初回登録（Design.md §3.3）。

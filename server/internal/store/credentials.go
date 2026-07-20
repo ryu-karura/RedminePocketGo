@@ -148,3 +148,49 @@ func (s *Store) DeleteExpiredChallenges(ctx context.Context, now time.Time) erro
 	}
 	return nil
 }
+
+// InsertEnrollmentCode は端末追加コードを保存する（ハッシュのみ）。
+// 同じハッシュが既にあれば主キー衝突でエラーになる（呼び出し側で再生成）。
+func (s *Store) InsertEnrollmentCode(ctx context.Context, codeHash, userID string, expiresAt time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		"INSERT INTO enrollment_codes (code_hash, user_id, expires_at) VALUES (?, ?, ?)",
+		codeHash, userID, fmtTime(expiresAt),
+	)
+	if err != nil {
+		return fmt.Errorf("store: 登録コード保存に失敗しました: %w", err)
+	}
+	return nil
+}
+
+// ConsumeEnrollmentCode はコードを 1 回限りで消費する。
+// 不明・期限切れ・使用済みは ok=false。
+func (s *Store) ConsumeEnrollmentCode(ctx context.Context, codeHash string, now time.Time) (userID string, ok bool, err error) {
+	var expires string
+	var used sql.NullString
+	err = s.db.QueryRowContext(ctx,
+		"SELECT user_id, expires_at, used_at FROM enrollment_codes WHERE code_hash = ?",
+		codeHash,
+	).Scan(&userID, &expires, &used)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("store: 登録コード取得に失敗しました: %w", err)
+	}
+	if used.Valid {
+		return "", false, nil
+	}
+	exp, err := parseTime(expires)
+	if err != nil {
+		return "", false, fmt.Errorf("store: 登録コードの時刻が不正です: %w", err)
+	}
+	if now.After(exp) {
+		return "", false, nil
+	}
+	if _, err := s.db.ExecContext(ctx,
+		"UPDATE enrollment_codes SET used_at = ? WHERE code_hash = ?", fmtTime(now), codeHash,
+	); err != nil {
+		return "", false, fmt.Errorf("store: 登録コードの使用記録に失敗しました: %w", err)
+	}
+	return userID, true, nil
+}

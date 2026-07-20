@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"time"
 	"testing"
 )
 
@@ -231,4 +232,77 @@ func limOrNil(l *fakeLimiter) Limiter {
 		return nil
 	}
 	return l
+}
+
+type fakeEnrollment struct{ redeemErr error }
+
+func (f *fakeEnrollment) IssueCode(context.Context, string) (string, time.Time, error) {
+	return "123456", time.Now().Add(10 * time.Minute), nil
+}
+func (f *fakeEnrollment) Redeem(context.Context, string) ([]byte, string, error) {
+	return []byte(`{"publicKey":{}}`), "ch-e", f.redeemErr
+}
+
+func TestEnrollmentEndpoints(t *testing.T) {
+	newMux := func(e EnrollmentService, lim Limiter) *http.ServeMux {
+		mux := http.NewServeMux()
+		(&AuthHandler{WebAuthn: &fakeWebAuthn{}, Sessions: &fakeSessions{},
+			Enrollment: e, Limiter: lim, CookieName: "rmapp_session"}).RegisterRoutes(mux)
+		return mux
+	}
+
+	t.Run("issue requires session", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		newMux(&fakeEnrollment{}, nil).ServeHTTP(rec,
+			httptest.NewRequest("POST", "/api/auth/enrollment-code", nil))
+		if rec.Code != 401 {
+			t.Errorf("status = %d; want 401", rec.Code)
+		}
+	})
+
+	t.Run("issue ok", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		newMux(&fakeEnrollment{}, nil).ServeHTTP(rec,
+			authedCtx(httptest.NewRequest("POST", "/api/auth/enrollment-code", nil)))
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"code":"123456"`) {
+			t.Errorf("status = %d body = %s", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("enroll missing code", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/auth/enroll", strings.NewReader("{}"))
+		newMux(&fakeEnrollment{}, nil).ServeHTTP(rec, req)
+		if rec.Code != 400 {
+			t.Errorf("status = %d; want 400", rec.Code)
+		}
+	})
+
+	t.Run("enroll invalid code counts failure", func(t *testing.T) {
+		lim := &fakeLimiter{allow: true}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/auth/enroll", strings.NewReader(`{"code":"999999"}`))
+		newMux(&fakeEnrollment{redeemErr: fmt.Errorf("%w: bad code", ErrInvalidRequest)}, lim).ServeHTTP(rec, req)
+		if rec.Code != 400 || lim.fails != 1 {
+			t.Errorf("status = %d fails = %d; want 400 and 1", rec.Code, lim.fails)
+		}
+	})
+
+	t.Run("enroll rate limited", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/auth/enroll", strings.NewReader(`{"code":"123456"}`))
+		newMux(&fakeEnrollment{}, &fakeLimiter{allow: false}).ServeHTTP(rec, req)
+		if rec.Code != 429 {
+			t.Errorf("status = %d; want 429", rec.Code)
+		}
+	})
+
+	t.Run("enroll ok", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/auth/enroll", strings.NewReader(`{"code":"123456"}`))
+		newMux(&fakeEnrollment{}, nil).ServeHTTP(rec, req)
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"challengeId":"ch-e"`) {
+			t.Errorf("status = %d body = %s", rec.Code, rec.Body)
+		}
+	})
 }
