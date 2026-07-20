@@ -140,9 +140,9 @@
 - [ ] `base.css` / `layout.css` / `components/`（hex は tokens.css のみ）
 - [ ] `js/app.js`（`SCREENS` マニフェスト、ハッシュルーティング、
       起動時 `GET /api/auth/me`）
-- [ ] `js/common/api.js`（fetch ラッパー、更新系に `X-Requested-With` 付与）
+- [x] `js/common/api.js`（fetch ラッパー、更新系に `X-Requested-With` 付与）
 - [ ] `js/common/shell.js`（ドロワーナビ、テーマ切替、ログインオーバーレイ）
-- [ ] `js/common/auth.js`（base64url 変換、`navigator.credentials`、機能判定）
+- [x] `js/common/auth.js`（base64url 変換、`navigator.credentials`、機能判定）
 - [x] `js/common/modal.js` / `js/common/utils.js`
 - [x] `js/common/tree.js`（純粋関数。`node --test` で単体テスト）
 - [ ] Tabulator 6 を `js/vendor/` に同梱（ライセンス込み）+
