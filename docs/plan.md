@@ -25,7 +25,7 @@
 |---|---|---|
 | 0 | 骨組み（リポジトリ構造と開発ループ） | 完了 |
 | 1 | サーバー基盤（config / store / httpapi / webfs） | 完了 |
-| 2 | 認証（WebAuthn / セッション / ブートストラップ / 端末管理） | 未着手 |
+| 2 | 認証（WebAuthn / セッション / ブートストラップ / 端末管理） | 進行中 |
 | 3 | API キー保管庫と中継（credential / proxy） | 未着手 |
 | 4 | Redmine クライアントと集約 API | 未着手 |
 | 5 | フロントエンド基盤とログイン画面 | 未着手 |
@@ -77,7 +77,7 @@
 
 目的: パスキーでログインでき、初回はRedmine 認証情報で紐付けできる状態。
 
-- [ ] `internal/store`: セッション永続化（ID はハッシュ保存、二軸タイムアウト）
+- [x] `internal/store`: セッション永続化（ID はハッシュ保存、二軸タイムアウト）
 - [ ] `internal/auth`: セッション発行・検証・失効（Cookie 属性は Design.md §3.5）
 - [ ] `internal/auth`: WebAuthn 登録セレモニー
       （`/api/auth/register/begin` / `finish`、Discoverable Credential、
