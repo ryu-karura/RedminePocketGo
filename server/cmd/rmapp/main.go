@@ -35,11 +35,21 @@ func readKEK(path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("crypto.kekFile を読めません: %w", err)
 	}
+	// generate-secrets.sh は 64 桁の 16 進を書き出す。まずそれを優先。
 	trimmed := strings.TrimSpace(string(raw))
-	if decoded, err := hex.DecodeString(trimmed); err == nil && len(decoded) == 32 {
-		return decoded, nil
+	if len(trimmed) == 64 {
+		if decoded, err := hex.DecodeString(trimmed); err == nil {
+			return decoded, nil
+		}
 	}
-	return []byte(trimmed), nil
+	// 生の 32 バイト（末尾改行の有無を許容）。生バイトは TrimSpace しない。
+	if len(raw) == 32 {
+		return raw, nil
+	}
+	if len(trimmed) == 32 {
+		return []byte(trimmed), nil
+	}
+	return nil, fmt.Errorf("crypto.kekFile は 64 桁の 16 進または 32 バイトである必要があります")
 }
 
 func main() {

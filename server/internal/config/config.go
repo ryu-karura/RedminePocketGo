@@ -237,6 +237,14 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config: redmine.baseURL %q は URL として不正です", c.Redmine.BaseURL)
 	}
 
+	// サブ URI は上流 URL の結合に直接使う。先頭スラッシュ必須・末尾
+	// スラッシュ禁止にして、二重スラッシュや host 直結の事故を防ぐ。
+	if c.Redmine.SubURI != "" {
+		if !strings.HasPrefix(c.Redmine.SubURI, "/") || strings.HasSuffix(c.Redmine.SubURI, "/") {
+			return fmt.Errorf("config: redmine.subURI %q は \"/\" で始まり \"/\" で終わらない必要があります", c.Redmine.SubURI)
+		}
+	}
+
 	positives := []struct {
 		key string
 		v   int

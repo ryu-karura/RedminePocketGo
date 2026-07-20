@@ -18,7 +18,9 @@ func TestAllowed(t *testing.T) {
 		{http.MethodPut, "/issues/100.json", true},
 		{http.MethodPost, "/issues.json", true},
 		{http.MethodGet, "/projects/7/memberships.json", true},
-		{http.MethodGet, "/my/account.json", true},
+
+		// /my/account.json は中継しない（応答に api_key を含むため。§9-1）
+		{http.MethodGet, "/my/account.json", false},
 
 		// メソッド不一致
 		{http.MethodDelete, "/issues/1.json", false},

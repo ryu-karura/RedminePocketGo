@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"io"
 	"net/http"
@@ -196,4 +198,92 @@ func TestProxyConnectionRefusedIs502(t *testing.T) {
 		t.Errorf("status = %d; want 502 on connection failure", rec.Code)
 	}
 	_ = io.Discard
+}
+
+func TestProxyPassesResponseHeadersAndStatus(t *testing.T) {
+	// X-Total-Count（Redmine のページング）や ETag が欠落しないこと。
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Total-Count", "123")
+		w.Header().Set("ETag", `"abc"`)
+		w.WriteHeader(200)
+		w.Write([]byte(`{"issues":[]}`))
+	}))
+	defer up.Close()
+	h := newProxy(t, up.URL, &fakeLoader{key: makeKey(t, "k")})
+
+	req := authed(httptest.NewRequest("GET", "/api/redmine/issues.json", nil), "u1")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	if rec.Header().Get("X-Total-Count") != "123" {
+		t.Errorf("X-Total-Count not relayed: %q", rec.Header().Get("X-Total-Count"))
+	}
+	if rec.Header().Get("ETag") != `"abc"` {
+		t.Errorf("ETag not relayed: %q", rec.Header().Get("ETag"))
+	}
+}
+
+func TestProxyGzipResponseDecodesCorrectly(t *testing.T) {
+	// 上流が gzip を返しても、クライアントは正しい JSON を受け取れること。
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		gz.Write([]byte(`{"ok":true}`))
+		gz.Close()
+	}))
+	defer up.Close()
+	h := newProxy(t, up.URL, &fakeLoader{key: makeKey(t, "k")})
+
+	req := authed(httptest.NewRequest("GET", "/api/redmine/issues.json", nil), "u1")
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	body := rec.Body.Bytes()
+	// レスポンスが gzip のままなら JSON として読めない。ReverseProxy は
+	// Content-Encoding を保って透過し、クライアント（ブラウザ）が復号できる。
+	if ce := rec.Header().Get("Content-Encoding"); ce == "gzip" {
+		// 透過されている場合、本文は gzip。ブラウザが解凍するので OK。
+		gr, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("passthrough body is not valid gzip: %v", err)
+		}
+		dec, _ := io.ReadAll(gr)
+		if !strings.Contains(string(dec), `"ok":true`) {
+			t.Errorf("decoded body wrong: %s", dec)
+		}
+	} else {
+		// 解凍済みで透過された場合、本文はそのまま JSON
+		if !strings.Contains(string(body), `"ok":true`) {
+			t.Errorf("body wrong: %s", body)
+		}
+	}
+}
+
+func TestProxyDoesNotFollowRedirect(t *testing.T) {
+	// 上流の 3xx を追従しない（API キーの外部再送を防ぐ）。
+	var secondHit bool
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redmine/issues.json" {
+			http.Redirect(w, r, "/redmine/other.json", http.StatusFound)
+			return
+		}
+		secondHit = true
+		w.WriteHeader(200)
+	}))
+	defer up.Close()
+	h := newProxy(t, up.URL, &fakeLoader{key: makeKey(t, "k")})
+
+	req := authed(httptest.NewRequest("GET", "/api/redmine/issues.json", nil), "u1")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	if secondHit {
+		t.Error("relay followed the redirect; it must return the 3xx to the client instead")
+	}
+	if rec.Code != http.StatusFound {
+		t.Errorf("status = %d; want 302 passed through", rec.Code)
+	}
 }

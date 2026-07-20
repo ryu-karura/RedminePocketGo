@@ -176,3 +176,20 @@ func TestNewVaultRejectsBadKEK(t *testing.T) {
 		t.Error("16-byte KEK accepted; AES-256 requires 32 bytes")
 	}
 }
+
+func TestAPIKeyRedactedByValueNotJustPointer(t *testing.T) {
+	// 値で fmt/JSON しても平文が漏れないこと（値レシーバの回帰テスト）。
+	k := NewTestAPIKey("top-secret")
+	if got := k.String(); got != "[redacted]" {
+		t.Errorf("pointer String() = %q", got)
+	}
+	// 値のまま %v / %s
+	if s := fmtSprintf("%v / %s", *k, *k); strings.Contains(s, "top-secret") {
+		t.Errorf("value formatting leaked the key: %s", s)
+	}
+	// 値のまま json.Marshal
+	b, _ := jsonMarshal(*k)
+	if strings.Contains(string(b), "top-secret") {
+		t.Errorf("value json.Marshal leaked the key: %s", b)
+	}
+}

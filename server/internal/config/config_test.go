@@ -216,3 +216,26 @@ func TestBaseURLMustStartWithSlash(t *testing.T) {
 		t.Fatalf("valid /rmapp rejected: %v", err)
 	}
 }
+
+func TestSubURIValidation(t *testing.T) {
+	tests := []struct {
+		subURI string
+		wantOK bool
+	}{
+		{"/redmine", true},
+		{"", true},         // ルート配信は許容
+		{"redmine", false}, // 先頭スラッシュなし
+		{"/redmine/", false},
+	}
+	for _, tt := range tests {
+		yaml := strings.Replace(validYAML, "baseURL: http://localhost:8080",
+			"baseURL: http://localhost:8080\n  subURI: \""+tt.subURI+"\"", 1)
+		_, err := Load(writeConfig(t, yaml), nil, noEnv)
+		if tt.wantOK && err != nil {
+			t.Errorf("subURI %q: unexpected error %v", tt.subURI, err)
+		}
+		if !tt.wantOK && (err == nil || !strings.Contains(err.Error(), "subURI")) {
+			t.Errorf("subURI %q: err = %v; want error naming subURI", tt.subURI, err)
+		}
+	}
+}

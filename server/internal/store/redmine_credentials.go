@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// ErrNoCredentialRow は更新対象の Redmine 認証情報が存在しない
+//（並行削除などのレース）ことを示す。
+var ErrNoCredentialRow = errors.New("store: 対象の Redmine 認証情報がありません")
+
 // RedmineCredential は暗号化された Redmine API キー（Design.md §5.3）。
 type RedmineCredential struct {
 	UserID     string
@@ -55,11 +59,20 @@ func (s *Store) GetRedmineCredential(ctx context.Context, userID string) (*Redmi
 }
 
 // SetRedmineCredentialStatus は status を更新する（active / invalid）。
+// 対象行が無い場合は ErrNoCredentialRow を返し、無効化の空振りを黙認しない。
 func (s *Store) SetRedmineCredentialStatus(ctx context.Context, userID, status string) error {
-	if _, err := s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx,
 		"UPDATE redmine_credentials SET status = ? WHERE user_id = ?", status, userID,
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("store: API キー状態の更新に失敗しました: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: 更新結果の確認に失敗しました: %w", err)
+	}
+	if n == 0 {
+		return ErrNoCredentialRow
 	}
 	return nil
 }
