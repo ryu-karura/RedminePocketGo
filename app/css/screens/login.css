@@ -1,0 +1,25 @@
+/* screens/login.css — ログイン画面固有のレイアウト。hex なし。 */
+
+.login-card {
+  width: min(92vw, 380px);
+  text-align: center;
+}
+.login-logo {
+  font-size: var(--fs-xl);
+  color: var(--primary);
+  margin-bottom: var(--space-5);
+}
+.login-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  text-align: left;
+  margin-top: var(--space-4);
+}
+.login-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}

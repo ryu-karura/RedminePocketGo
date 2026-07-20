@@ -133,21 +133,21 @@
 
 目的: SPA の骨格が動き、パスキーでログインできる状態。
 
-- [ ] `app/index.html`（共通シェル: トップバー・ナビ・`<main id="screens">`・
+- [x] `app/index.html`（共通シェル: トップバー・ナビ・`<main id="screens">`・
       トースト。FOUC 防止インラインスクリプト 1 本のみ）
-- [ ] `app/css/tokens.css`（テンプレートのオーシャンブルー一式 +
+- [x] `app/css/tokens.css`（テンプレートのオーシャンブルー一式 +
       `--depth-1..5` / `--status-new|open|closed`、両モード）
-- [ ] `base.css` / `layout.css` / `components/`（hex は tokens.css のみ）
-- [ ] `js/app.js`（`SCREENS` マニフェスト、ハッシュルーティング、
+- [x] `base.css` / `layout.css` / `components/`（hex は tokens.css のみ）
+- [x] `js/app.js`（`SCREENS` マニフェスト、ハッシュルーティング、
       起動時 `GET /api/auth/me`）
 - [x] `js/common/api.js`（fetch ラッパー、更新系に `X-Requested-With` 付与）
-- [ ] `js/common/shell.js`（ドロワーナビ、テーマ切替、ログインオーバーレイ）
+- [x] `js/common/shell.js`（ドロワーナビ、テーマ切替、ログインオーバーレイ）
 - [x] `js/common/auth.js`（base64url 変換、`navigator.credentials`、機能判定）
 - [x] `js/common/modal.js` / `js/common/utils.js`
 - [x] `js/common/tree.js`（純粋関数。`node --test` で単体テスト）
 - [ ] Tabulator 6 を `js/vendor/` に同梱（ライセンス込み）+
       `js/common/table.js` ラッパー（dataTree 対応）
-- [ ] `login` 画面（パスキー主導線、登録コード、ブートストラップ。
+- [x] `login` 画面（パスキー主導線、登録コード、ブートストラップ。
       4 状態と失敗のインライン表示。Design.md §7.5）
 - [ ] `server/e2e/` E2E ハーネス（chromedp + 同梱 Chromium、build tag
       `e2e`、`make test-e2e` ターゲット、CDP WebAuthn 仮想認証器。
