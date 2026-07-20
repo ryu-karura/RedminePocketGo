@@ -28,7 +28,7 @@
 | 2 | 認証（WebAuthn / セッション / ブートストラップ / 端末管理） | 完了 |
 | 3 | API キー保管庫と中継（credential / proxy） | 完了 |
 | 4 | Redmine クライアントと集約 API | 完了 |
-| 5 | フロントエンド基盤とログイン画面 | 未着手 |
+| 5 | フロントエンド基盤とログイン画面 | 進行中 |
 | 6 | 業務画面（projects / issues / issue-detail / settings） | 未着手 |
 | 7 | 端末紛失対策とセキュリティ強化 | 未着手 |
 | 8 | 統合テストと運用スクリプト | 未着手 |
@@ -144,7 +144,7 @@
 - [ ] `js/common/shell.js`（ドロワーナビ、テーマ切替、ログインオーバーレイ）
 - [ ] `js/common/auth.js`（base64url 変換、`navigator.credentials`、機能判定）
 - [ ] `js/common/modal.js` / `js/common/utils.js`
-- [ ] `js/common/tree.js`（純粋関数。`node --test` で単体テスト）
+- [x] `js/common/tree.js`（純粋関数。`node --test` で単体テスト）
 - [ ] Tabulator 6 を `js/vendor/` に同梱（ライセンス込み）+
       `js/common/table.js` ラッパー（dataTree 対応）
 - [ ] `login` 画面（パスキー主導線、登録コード、ブートストラップ。
@@ -153,7 +153,7 @@
       `e2e`、`make test-e2e` ターゲット、CDP WebAuthn 仮想認証器。
       npm 依存なし — CLAUDE.md §3.1 と非抵触）
 
-完了条件: `node --test app/js/tests/` 緑（tree.js / utils.js）。
+完了条件: `node --test app/js/tests/*.test.js` 緑（tree.js / utils.js）。
 `make test-e2e` 緑: サーバー配信でパスキー登録（CDP WebAuthn 仮想
 認証器）→ ログイン → `/api/auth/me` 成功までを自動検証し、
 スクリーンショットを証跡として保存・送付する（手動確認は行わない）。
@@ -174,7 +174,7 @@
 - [ ] 全画面の 4 状態（loading / empty / error+retry / populated）と
       アクセシビリティ属性（Design.md §7.10）
 
-完了条件: `node --test` 緑。`make test-e2e` 緑: 各画面の 4 状態
+完了条件: `node --test app/js/tests/*.test.js` 緑。`make test-e2e` 緑: 各画面の 4 状態
 （loading / empty / error+retry / populated）と
 `redmine_credential_invalid` → 再紐付け画面の導線を自動検証し、
 スクリーンショットを証跡として保存・送付する（手動確認は行わない）。
@@ -230,3 +230,4 @@
 | 2026-07-19 | 初版作成 | 実装開始のための計画策定 |
 | 2026-07-19 | フェーズ 5・6 の完了条件を手動確認から `make test-e2e`（chromedp）による自動検証に変更し、フェーズ 5 に E2E ハーネスのタスクを追加 | 無人実行では手動のブラウザ確認が実施できないため |
 | 2026-07-19 | 「自動実行ログ」表を新設し、運用ルールに無人実行の参照を追加 | 定期実行の可視化と停滞検知の判定根拠のため |
+| 2026-07-20 | フロントの単体テスト起動コマンドを `node --test app/js/tests/` から `node --test app/js/tests/*.test.js` に修正（フェーズ 5・6 完了条件、test スキル、CI） | node v22 は `--test` にディレクトリを渡すと探索でなく実行対象扱いにするため |

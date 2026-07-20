@@ -25,3 +25,4 @@ Rules for this file:
 
 | # | Date | Context | What failed | Root cause | Rule |
 |---|---|---|---|---|---|
+| 2 | 2026-07-20 | P5 / app/js | `node --test app/js/tests/` reported 1 failing "test" (Cannot find module .../tests) | node v22 treats a bare directory arg to `--test` as an entrypoint to run, not a discovery root | Invoke the Node test runner with a file glob (`node --test app/js/tests/*.test.js`), never a bare directory |

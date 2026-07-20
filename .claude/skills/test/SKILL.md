@@ -11,7 +11,7 @@ description: Which test suites to run for each kind of change in RedminePocketGo
 |---|---|---|
 | `server/internal/httpapi` (handlers, middleware) | `make test-api` + `make test-unit` | Table-driven: success / unauthenticated / malformed / upstream failure (CLAUDE.md §4.7) |
 | Any other `server/` package | `make test-unit` | Redmine client only against `httptest.Server` |
-| `app/js/common/tree.js`, `utils.js`, other pure JS modules | `node --test app/js/tests/` | Node's built-in runner only — no npm packages, ever |
+| `app/js/common/tree.js`, `utils.js`, other pure JS modules | `node --test app/js/tests/*.test.js` | Node's built-in runner only — no npm packages, ever. Pass the glob, not the bare directory: `node --test <dir>` runs the dir as an entrypoint in v22 instead of discovering tests |
 | `app/` screens, CSS, HTML | `node --test` if logic changed, plus manual 4-state check (loading / empty / error / populated) served by the Go server | Record what was manually verified in the commit body |
 | `scripts/*.sh` | `shellcheck scripts/*.sh` | Before every commit touching shell |
 | Phase 5–6 browser flows (login, screen 4-states) | `make test-e2e` (`server/e2e/`, build tag `e2e`) | chromedp + bundled Chromium (`/opt/pw-browsers/chromium`); passkeys via CDP WebAuthn virtual authenticator; screenshots kept as evidence. Replaces the manual browser checks in unattended runs; phase 5+ |
