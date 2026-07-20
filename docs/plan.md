@@ -26,7 +26,7 @@
 | 0 | 骨組み（リポジトリ構造と開発ループ） | 完了 |
 | 1 | サーバー基盤（config / store / httpapi / webfs） | 完了 |
 | 2 | 認証（WebAuthn / セッション / ブートストラップ / 端末管理） | 完了 |
-| 3 | API キー保管庫と中継（credential / proxy） | 未着手 |
+| 3 | API キー保管庫と中継（credential / proxy） | 進行中 |
 | 4 | Redmine クライアントと集約 API | 未着手 |
 | 5 | フロントエンド基盤とログイン画面 | 未着手 |
 | 6 | 業務画面（projects / issues / issue-detail / settings） | 未着手 |
@@ -99,7 +99,7 @@
 
 目的: ブラウザに API キーを渡さず Redmine REST API を叩ける状態。
 
-- [ ] `internal/credential`: AES-256-GCM 暗号化保管
+- [x] `internal/credential`: AES-256-GCM 暗号化保管
       （KEK はファイル、ノンスはレコード毎、`MarshalJSON` は `"[redacted]"`）
 - [ ] `internal/proxy`: 許可リスト（`allowlist.go` に宣言的列挙、
       一致しなければ 404。Design.md §6.2）

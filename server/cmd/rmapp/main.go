@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -11,11 +12,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/ryu-karura/RedminePocketGo/server/internal/auth"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/config"
+	"github.com/ryu-karura/RedminePocketGo/server/internal/credential"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/httpapi"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/store"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/webfs"
@@ -23,14 +26,19 @@ import (
 
 var version = "dev"
 
-// stubVault はフェーズ 3（internal/credential）が入るまでの暫定実装。
-// 平文保存はしない方針のため、キーは保存せず警告だけ残す（キー自体は
-// ログに書かない）。
-type stubVault struct{ logger *slog.Logger }
-
-func (v stubVault) SaveAPIKey(_ context.Context, userID, _ string) error {
-	v.logger.Warn("credential vault not yet implemented; api key NOT stored", "user_id", userID)
-	return nil
+// readKEK はファイルから KEK を読み込む。ファイルは 16 進または生バイトの
+// どちらでもよい（generate-secrets.sh は 16 進を書き出す）。KEK 自体は
+// ログにもエラーにも出さない（CLAUDE.md §4.4）。
+func readKEK(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("crypto.kekFile を読めません: %w", err)
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if decoded, err := hex.DecodeString(trimmed); err == nil && len(decoded) == 32 {
+		return decoded, nil
+	}
+	return []byte(trimmed), nil
 }
 
 func main() {
@@ -100,9 +108,18 @@ func run(out io.Writer, args []string) error {
 		return err
 	}
 
+	kek, err := readKEK(cfg.Crypto.KEKFile)
+	if err != nil {
+		return err
+	}
+	vault, err := credential.NewVault(st, kek, cfg.Crypto.KeyVersion)
+	if err != nil {
+		return err
+	}
+
 	var bootstrapSvc httpapi.BootstrapService
 	if cfg.Features.PasswordBootstrap {
-		bootstrapSvc = auth.NewBootstrap(st, wa, stubVault{logger}, auth.BootstrapConfig{
+		bootstrapSvc = auth.NewBootstrap(st, wa, vault, auth.BootstrapConfig{
 			BaseURL: cfg.Redmine.BaseURL,
 			SubURI:  cfg.Redmine.SubURI,
 			Timeout: time.Duration(cfg.Redmine.TimeoutSeconds) * time.Second,
