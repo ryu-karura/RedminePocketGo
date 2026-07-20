@@ -101,7 +101,7 @@
 
 - [x] `internal/credential`: AES-256-GCM 暗号化保管
       （KEK はファイル、ノンスはレコード毎、`MarshalJSON` は `"[redacted]"`）
-- [ ] `internal/proxy`: 許可リスト（`allowlist.go` に宣言的列挙、
+- [x] `internal/proxy`: 許可リスト（`allowlist.go` に宣言的列挙、
       一致しなければ 404。Design.md §6.2）
 - [ ] `internal/proxy`: ヘッダー制御（`X-Redmine-API-Key` 受信は 400、
       `Authorization` / `Cookie` / `X-Redmine-Switch-User` は転送禁止）
