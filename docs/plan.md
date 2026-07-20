@@ -79,10 +79,10 @@
 
 - [x] `internal/store`: セッション永続化（ID はハッシュ保存、二軸タイムアウト）
 - [x] `internal/auth`: セッション発行・検証・失効（Cookie 属性は Design.md §3.5）
-- [ ] `internal/auth`: WebAuthn 登録セレモニー
+- [x] `internal/auth`: WebAuthn 登録セレモニー
       （`/api/auth/register/begin` / `finish`、Discoverable Credential、
       userVerification=required）
-- [ ] `internal/auth`: WebAuthn 認証セレモニー
+- [x] `internal/auth`: WebAuthn 認証セレモニー
       （`/api/auth/login/begin` / `finish`）
 - [ ] `GET /api/auth/me` / `POST /api/auth/logout`
 - [ ] レート制限（連続 5 回失敗で 60 秒ロック）

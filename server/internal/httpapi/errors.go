@@ -6,7 +6,15 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+)
+
+// サービス層（internal/auth など）がエラーの HTTP 分類を伝えるための番兵。
+// httpapi ← サービス層の import 方向を保ったまま errors.Is で写像できる。
+var (
+	// ErrInvalidRequest は入力不正として 400 系に写像されるべきエラー。
+	ErrInvalidRequest = errors.New("invalid request")
 )
 
 // Design.md §6.5 のエラーコード。snake_case の識別子。
