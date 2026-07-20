@@ -27,7 +27,7 @@
 | 1 | サーバー基盤（config / store / httpapi / webfs） | 完了 |
 | 2 | 認証（WebAuthn / セッション / ブートストラップ / 端末管理） | 完了 |
 | 3 | API キー保管庫と中継（credential / proxy） | 完了 |
-| 4 | Redmine クライアントと集約 API | 未着手 |
+| 4 | Redmine クライアントと集約 API | 進行中 |
 | 5 | フロントエンド基盤とログイン画面 | 未着手 |
 | 6 | 業務画面（projects / issues / issue-detail / settings） | 未着手 |
 | 7 | 端末紛失対策とセキュリティ強化 | 未着手 |
@@ -117,7 +117,7 @@
 
 目的: 画面が 1〜2 回の呼び出しで初期表示できる状態。
 
-- [ ] `internal/redmine`: 型付きクライアント（タイムアウト、指数バックオフ
+- [x] `internal/redmine`: 型付きクライアント（タイムアウト、指数バックオフ
       最大 2 回、同時接続上限、ページング取得）
 - [ ] `js/common/tree.js` 相当のサーバー側ツリー化
       （`GET /api/projects/tree`、`GET /api/projects/{id}/issues/tree`）
