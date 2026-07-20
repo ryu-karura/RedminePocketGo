@@ -78,7 +78,7 @@
 目的: パスキーでログインでき、初回はRedmine 認証情報で紐付けできる状態。
 
 - [x] `internal/store`: セッション永続化（ID はハッシュ保存、二軸タイムアウト）
-- [ ] `internal/auth`: セッション発行・検証・失効（Cookie 属性は Design.md §3.5）
+- [x] `internal/auth`: セッション発行・検証・失効（Cookie 属性は Design.md §3.5）
 - [ ] `internal/auth`: WebAuthn 登録セレモニー
       （`/api/auth/register/begin` / `finish`、Discoverable Credential、
       userVerification=required）
