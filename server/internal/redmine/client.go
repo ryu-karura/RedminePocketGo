@@ -5,19 +5,22 @@ package redmine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/ryu-karura/RedminePocketGo/server/internal/httpapi"
 )
 
 // ErrUnauthorized は API キーが上流に拒否された（401）。呼び出し側は
 // キーを無効化して 409 を返す。
-var ErrUnauthorized = fmt.Errorf("redmine: API キーが拒否されました")
+var ErrUnauthorized = errors.New("redmine: API キーが拒否されました")
+
+// ErrUpstream は上流（Redmine）の一時的・恒久的障害。呼び出し側は 502 に
+// 写像する。httpapi へ依存しないよう redmine 側に番兵を置く（import 循環回避）。
+var ErrUpstream = errors.New("redmine: 上流障害")
 
 // Config は接続設定（config.Redmine から組み立てる）。
 type Config struct {
@@ -133,11 +136,11 @@ func (c *Client) get(ctx context.Context, apiKey, path string, query url.Values,
 		resp, err := c.http.Do(req)
 		switch {
 		case err != nil:
-			lastErr = fmt.Errorf("%w: %w", httpapi.ErrUpstream, err)
+			lastErr = fmt.Errorf("%w: %w", ErrUpstream, err)
 		case resp.StatusCode == http.StatusOK:
 			defer resp.Body.Close()
 			if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
-				return fmt.Errorf("%w: レスポンスの解釈に失敗しました: %w", httpapi.ErrUpstream, err)
+				return fmt.Errorf("%w: レスポンスの解釈に失敗しました: %w", ErrUpstream, err)
 			}
 			return nil
 		case resp.StatusCode == http.StatusUnauthorized:
@@ -145,10 +148,10 @@ func (c *Client) get(ctx context.Context, apiKey, path string, query url.Values,
 			return ErrUnauthorized
 		case resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable:
 			resp.Body.Close()
-			lastErr = fmt.Errorf("%w: 一時的な上流障害 (status %d)", httpapi.ErrUpstream, resp.StatusCode)
+			lastErr = fmt.Errorf("%w: 一時的な上流障害 (status %d)", ErrUpstream, resp.StatusCode)
 		default:
 			resp.Body.Close()
-			return fmt.Errorf("%w: 上流が status %d を返しました", httpapi.ErrUpstream, resp.StatusCode)
+			return fmt.Errorf("%w: 上流が status %d を返しました", ErrUpstream, resp.StatusCode)
 		}
 
 		if attempt >= c.maxRetries {
@@ -156,7 +159,7 @@ func (c *Client) get(ctx context.Context, apiKey, path string, query url.Values,
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%w: %w", httpapi.ErrUpstream, ctx.Err())
+			return fmt.Errorf("%w: %w", ErrUpstream, ctx.Err())
 		case <-time.After(c.backoffBase << attempt): // 指数バックオフ
 		}
 	}

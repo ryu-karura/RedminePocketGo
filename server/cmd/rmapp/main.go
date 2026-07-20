@@ -21,6 +21,7 @@ import (
 	"github.com/ryu-karura/RedminePocketGo/server/internal/credential"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/httpapi"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/proxy"
+	"github.com/ryu-karura/RedminePocketGo/server/internal/redmine"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/store"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/webfs"
 )
@@ -50,6 +51,18 @@ func readKEK(path string) ([]byte, error) {
 		return []byte(trimmed), nil
 	}
 	return nil, fmt.Errorf("crypto.kekFile は 64 桁の 16 進または 32 バイトである必要があります")
+}
+
+// vaultKeyProvider は保管庫を httpapi.KeyProvider に適合させる。復号した
+// 平文キーはこの呼び出しの戻り値としてハンドラ内に閉じ、保存しない。
+type vaultKeyProvider struct{ vault *credential.Vault }
+
+func (v vaultKeyProvider) APIKeyValue(ctx context.Context, userID string) (string, error) {
+	key, err := v.vault.LoadAPIKey(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	return key.Value(), nil
 }
 
 func main() {
@@ -160,6 +173,21 @@ func run(out io.Writer, args []string) error {
 		Timeout: time.Duration(cfg.Redmine.TimeoutSeconds) * time.Second,
 	})
 	apiMux.HandleFunc("/api/redmine/", relay.Handler("/api/redmine"))
+
+	// 集約 API（画面向け。ツリー化・詳細・メタ）
+	rmClient := redmine.NewClient(redmine.Config{
+		BaseURL:        cfg.Redmine.BaseURL,
+		SubURI:         cfg.Redmine.SubURI,
+		Timeout:        time.Duration(cfg.Redmine.TimeoutSeconds) * time.Second,
+		MaxRetries:     cfg.Redmine.MaxRetries,
+		MaxConcurrency: cfg.Redmine.MaxConcurrency,
+		PageSize:       cfg.Redmine.PageSize,
+	})
+	(&httpapi.AggregateHandler{
+		Redmine: rmClient,
+		Keys:    vaultKeyProvider{vault},
+		Cache:   httpapi.NewAggCache(),
+	}).RegisterRoutes(apiMux)
 
 	mux := http.NewServeMux()
 	if cfg.BaseURL != "" {

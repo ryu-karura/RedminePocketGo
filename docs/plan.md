@@ -121,9 +121,9 @@
       最大 2 回、同時接続上限、ページング取得）
 - [x] `js/common/tree.js` 相当のサーバー側ツリー化
       （`GET /api/projects/tree`、`GET /api/projects/{id}/issues/tree`）
-- [ ] `GET /api/issues/{id}/detail`（本体・履歴・添付・選択肢を 1 回で）
-- [ ] `GET /api/meta`（トラッカー・ステータス・優先度）
-- [ ] サーバー内キャッシュ（メタ 10 分、プロジェクトツリー 60 秒、
+- [x] `GET /api/issues/{id}/detail`（本体・履歴・添付・選択肢を 1 回で）
+- [x] `GET /api/meta`（トラッカー・ステータス・優先度）
+- [x] サーバー内キャッシュ（メタ 10 分、プロジェクトツリー 60 秒、
       必ずユーザー単位で分離。Design.md §6.6）
 
 完了条件: `make test-unit` / `make test-api` 緑。Redmine クライアントは

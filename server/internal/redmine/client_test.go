@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ryu-karura/RedminePocketGo/server/internal/httpapi"
 )
 
 func newTestClient(upstreamURL string, pageSize int) *Client {
@@ -132,7 +131,7 @@ func TestClientGivesUpAfterMaxRetries(t *testing.T) {
 	c := newTestClient(srv.URL, 100)
 	c.backoffBase = time.Millisecond
 	_, err := c.ListProjects(context.Background(), "k")
-	if !errors.Is(err, httpapi.ErrUpstream) {
+	if !errors.Is(err, ErrUpstream) {
 		t.Fatalf("err = %v; want ErrUpstream", err)
 	}
 	if calls.Load() != 3 {
