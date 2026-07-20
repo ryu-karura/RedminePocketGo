@@ -84,7 +84,7 @@
       userVerification=required）
 - [x] `internal/auth`: WebAuthn 認証セレモニー
       （`/api/auth/login/begin` / `finish`）
-- [ ] `GET /api/auth/me` / `POST /api/auth/logout`
+- [x] `GET /api/auth/me` / `POST /api/auth/logout`
 - [ ] レート制限（連続 5 回失敗で 60 秒ロック）
 - [ ] パスワードブートストラップ（Redmine `/my/account.json` に Basic 認証、
       不存在ユーザーにも同等処理時間、パスワードは保存しない。Design.md §3.3）

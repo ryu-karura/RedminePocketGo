@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	"github.com/ryu-karura/RedminePocketGo/server/internal/store"
 )
 
 // WebAuthnService は internal/auth の WebAuthn が実装する。
@@ -23,10 +25,17 @@ type SessionService interface {
 	ClearCookie() *http.Cookie
 }
 
+// UserGetter は利用者情報の参照。*store.Store が実装する。
+type UserGetter interface {
+	GetUserByID(ctx context.Context, id string) (*store.User, error)
+}
+
 // AuthHandler は認証エンドポイント（Design.md §3.2）を提供する。
 type AuthHandler struct {
-	WebAuthn WebAuthnService
-	Sessions SessionService
+	WebAuthn   WebAuthnService
+	Sessions   SessionService
+	Users      UserGetter
+	CookieName string
 }
 
 // RegisterRoutes は認証ルートを mux に登録する。
@@ -35,6 +44,45 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/register/finish", h.registerFinish)
 	mux.HandleFunc("POST /api/auth/login/begin", h.loginBegin)
 	mux.HandleFunc("POST /api/auth/login/finish", h.loginFinish)
+	mux.HandleFunc("GET /api/auth/me", h.me)
+	mux.HandleFunc("POST /api/auth/logout", h.logout)
+}
+
+// me は SPA 起動時に呼ばれる現在セッション情報（Design.md §3.2）。
+func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFrom(r.Context())
+	if sess == nil {
+		WriteError(w, CodeUnauthenticated, "login required")
+		return
+	}
+	u, err := h.Users.GetUserByID(r.Context(), sess.UserID)
+	if err != nil {
+		WriteError(w, CodeInternalError, "user lookup failed")
+		return
+	}
+	if u == nil {
+		// セッションはあるが利用者が消えている（削除済み）→ 未認証扱い
+		http.SetCookie(w, h.Sessions.ClearCookie())
+		WriteError(w, CodeUnauthenticated, "user no longer exists")
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]string{
+		"userId":       u.ID,
+		"redmineLogin": u.RedmineLogin,
+		"displayName":  u.DisplayName,
+	})
+}
+
+// logout はセッションを破棄する。Cookie が無くても冪等に成功する。
+func (h *AuthHandler) logout(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(h.CookieName); err == nil && c.Value != "" {
+		if err := h.Sessions.Revoke(r.Context(), c.Value); err != nil {
+			WriteError(w, CodeInternalError, "logout failed")
+			return
+		}
+	}
+	http.SetCookie(w, h.Sessions.ClearCookie())
+	WriteJSON(w, http.StatusOK, map[string]bool{"loggedOut": true})
 }
 
 // ceremonyResponse は begin 系の共通レスポンス。options はそのまま

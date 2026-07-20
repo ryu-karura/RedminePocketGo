@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ryu-karura/RedminePocketGo/server/internal/auth"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/config"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/httpapi"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/store"
@@ -27,14 +28,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "rmapp:", err)
 		os.Exit(1)
 	}
-}
-
-// noopResolver はセッション解決の暫定実装。internal/auth（フェーズ 2）で
-// 置き換わるまで、全リクエストを未認証として扱う。
-type noopResolver struct{}
-
-func (noopResolver) ResolveSession(context.Context, string) (*httpapi.SessionInfo, error) {
-	return nil, nil
 }
 
 func run(out io.Writer, args []string) error {
@@ -80,16 +73,46 @@ func run(out io.Writer, args []string) error {
 		return err
 	}
 
-	mux := http.NewServeMux()
-	// /api 配下は後続フェーズでハンドラが増える。未実装のパスはエンベロープの 404。
-	mux.HandleFunc(cfg.BaseURL+"/api/", func(w http.ResponseWriter, _ *http.Request) {
+	sessions := auth.NewSessions(st, auth.Config{
+		IdleTimeout:     time.Duration(cfg.Session.IdleTimeoutHours) * time.Hour,
+		AbsoluteTimeout: time.Duration(cfg.Session.AbsoluteTimeoutHours) * time.Hour,
+		CookieName:      cfg.Session.CookieName,
+		SecureCookie:    cfg.Session.SecureCookie,
+	})
+	wa, err := auth.NewWebAuthn(st, auth.WebAuthnConfig{
+		RPID:             cfg.WebAuthn.RPID,
+		RPName:           cfg.WebAuthn.RPName,
+		Origins:          cfg.WebAuthn.Origins,
+		UserVerification: cfg.WebAuthn.UserVerification,
+		ChallengeTTL:     time.Duration(cfg.WebAuthn.ChallengeTTLMinutes) * time.Minute,
+	})
+	if err != nil {
+		return err
+	}
+
+	apiMux := http.NewServeMux()
+	// 未実装の /api パスはエンベロープの 404（個別ルートが優先される）。
+	apiMux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		httpapi.WriteError(w, httpapi.CodeNotFound, "no such endpoint")
 	})
+	(&httpapi.AuthHandler{
+		WebAuthn:   wa,
+		Sessions:   sessions,
+		Users:      st,
+		CookieName: cfg.Session.CookieName,
+	}).RegisterRoutes(apiMux)
+
+	mux := http.NewServeMux()
+	if cfg.BaseURL != "" {
+		mux.Handle(cfg.BaseURL+"/api/", http.StripPrefix(cfg.BaseURL, apiMux))
+	} else {
+		mux.Handle("/api/", apiMux)
+	}
 	if cfg.ServeStatic {
 		mux.Handle("/", webfs.Handler(cfg.Webroot, cfg.BaseURL, cfg.NoCache))
 	}
 
-	handler := httpapi.Chain(logger, noopResolver{}, cfg.Session.CookieName)(mux)
+	handler := httpapi.Chain(logger, sessions, cfg.Session.CookieName)(mux)
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
