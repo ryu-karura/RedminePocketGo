@@ -27,7 +27,7 @@
 | 1 | サーバー基盤（config / store / httpapi / webfs） | 完了 |
 | 2 | 認証（WebAuthn / セッション / ブートストラップ / 端末管理） | 完了 |
 | 3 | API キー保管庫と中継（credential / proxy） | 完了 |
-| 4 | Redmine クライアントと集約 API | 進行中 |
+| 4 | Redmine クライアントと集約 API | 完了 |
 | 5 | フロントエンド基盤とログイン画面 | 未着手 |
 | 6 | 業務画面（projects / issues / issue-detail / settings） | 未着手 |
 | 7 | 端末紛失対策とセキュリティ強化 | 未着手 |
@@ -221,6 +221,7 @@
 | 2026-07-19 16:07 | 1 | 7/7 | e37217b〜6dfe12a（タスク 7 + レビュー修正 1） | フェーズ 1 完了。完了条件（test-unit 緑 / config テーブル駆動テスト / 空 DB への migrations 適用）を検証済み。品質ゲート: code-review（medium、ファインダー 2 + 検証）実施、CONFIRMED 7 件修正・3 件は理由付きで見送り |
 | 2026-07-20 04:07 | 2 | 8/8 | b6fd4f2〜08dcf36（タスク 8 + レビュー修正 1） | フェーズ 2 完了。完了条件（test-api 緑=成功/未認証/不正入力/上流障害のテーブル駆動、擬似認証器で begin→finish）を検証済み。品質ゲート: code-review（medium、ファインダー 2 + 検証）実施、CONFIRMED 7 件修正（CloneWarning 拒否、チャレンジ/登録コードの一回性アトミック化、XFF 由来のレート制限キー、bootstrap キーの IP 化、重複登録の 4xx 化、last_seen 書き込み間引き）。見送り: レートリミッタの Allow/Fail バースト競合（WebAuthn は暗号で保護・登録コードはアトミック単回化で緩和、恒久対策は将来）／stubVault の成功偽装（credential 保管庫はフェーズ 3）／レートリミッタの map 無制限増加（低速リーク、将来掃除）／RequireAuth ミドルウェア抽出（altitude、将来）／bootstrap の 401 は仕様どおり（409 はフェーズ 3 の保管キー無効化用） |
 | 2026-07-20 10:07 | 3 | 5/5 | 4535d72〜b836589（タスク 5 + レビュー修正 1） | フェーズ 3 完了。完了条件（test-api 緑=許可リスト外 404 / ヘッダー拒否・除去 / 401→409 変換、上流は httptest.Server）を検証済み。品質ゲート: code-review（medium、ファインダー 2 + 検証）実施、CONFIRMED 7 件修正（**§9-1 重大**: /my/account.json を中継許可リストから除外＝api_key 漏洩防止／リレーを httputil.ReverseProxy 化＝リダイレクト非追従で API キー再送防止・gzip/応答ヘッダ/chunked/パスエスケープの各バグ解消／APIKey を値レシーバ化で redaction 迂回防止／subURI 検証／readKEK 厳格化／SetRedmineCredentialStatus の空振り検知）。見送り: KEK ローテ後の復号失敗が status=active のまま 500 継続（keyVersion による運用対応、将来）／前段プロキシ由来の上流 401 を credential-invalid 扱い（Design.md §4.4 の仕様どおり） |
+| 2026-07-20 16:07 | 4 | 5/5 | cb971ff〜418707b（タスク 5 + レビュー修正 1） | フェーズ 4 完了。完了条件（test-unit / test-api 緑、Redmine クライアントは httptest.Server のみ、ツリー化は純粋関数の単体テスト）を検証済み。品質ゲート: code-review（medium、ファインダー 2 + 検証）実施、CONFIRMED 7 件修正（ttlCache を per-key ロック化＝1 ユーザーの遅い上流が全体を止めない／ページング重複の解消＝offset は pageSize で進める／集約 401 も MarkInvalid して proxy と挙動統一／resolve のエラー分類＝未連携は 409・一時障害は 500＋slog 記録／バックオフ overflow の上限／context キャンセルの 502 誤分類回避／兄弟ソートの安定化+ID タイブレーク）。見送り（correctness 影響なしの整理）: ttlCache の map エビクション／meta の並列取得／バックオフ中のセマフォ占有／循環復旧の O(n²)／サブ URI 結合・ヘッダー名定数・ツリービルダの三重複 |
 
 ## 変更履歴
 
