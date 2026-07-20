@@ -136,6 +136,10 @@ func (c *Client) get(ctx context.Context, apiKey, path string, query url.Values,
 		resp, err := c.http.Do(req)
 		switch {
 		case err != nil:
+			// クライアント側の中断・期限切れは上流障害として数えない
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fmt.Errorf("redmine: リクエストが中断されました: %w", ctxErr)
+			}
 			lastErr = fmt.Errorf("%w: %w", ErrUpstream, err)
 		case resp.StatusCode == http.StatusOK:
 			defer resp.Body.Close()
@@ -159,14 +163,30 @@ func (c *Client) get(ctx context.Context, apiKey, path string, query url.Values,
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%w: %w", ErrUpstream, ctx.Err())
-		case <-time.After(c.backoffBase << attempt): // 指数バックオフ
+			return fmt.Errorf("redmine: リクエストが中断されました: %w", ctx.Err())
+		case <-time.After(backoff(c.backoffBase, attempt)): // 指数バックオフ
 		}
 	}
 }
 
-// paginate は offset/limit で全ページを取得する。
-// fetch は 1 ページを取得し (件数, total_count) を返す。
+// backoff は base << attempt を返すが、桁あふれ（負値化）と過大待機を防ぐため
+// 上限で頭打ちにする。
+func backoff(base time.Duration, attempt int) time.Duration {
+	const maxBackoff = 30 * time.Second
+	if attempt < 0 || attempt >= 32 {
+		return maxBackoff
+	}
+	d := base << attempt
+	if d <= 0 || d > maxBackoff {
+		return maxBackoff
+	}
+	return d
+}
+
+// paginate は offset/limit で全ページを取得する。fetch は 1 ページを取得し
+// (件数, total_count) を返す。offset は要求 limit（pageSize）ずつ進める
+// ——返り件数で進めると、途中ページが limit 未満のとき次ページと重複して
+// 同じレコードを二重取得してしまうため。
 func (c *Client) paginate(fetch func(offset int) (count, total int, err error)) error {
 	offset := 0
 	for {
@@ -174,8 +194,8 @@ func (c *Client) paginate(fetch func(offset int) (count, total int, err error)) 
 		if err != nil {
 			return err
 		}
-		offset += count
-		if offset >= total || count == 0 {
+		offset += c.pageSize
+		if count == 0 || offset >= total {
 			return nil
 		}
 	}

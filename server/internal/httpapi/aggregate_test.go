@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,12 +46,17 @@ func (f *fakeAggregator) ListPriorities(context.Context, string) ([]redmine.Ref,
 }
 
 type fakeKeyLoader struct {
-	key string
-	err error
+	key         string
+	err         error
+	markedValid string // MarkInvalid が呼ばれた userID
 }
 
 func (f *fakeKeyLoader) APIKeyValue(context.Context, string) (string, error) {
 	return f.key, f.err
+}
+func (f *fakeKeyLoader) MarkInvalid(_ context.Context, userID string) error {
+	f.markedValid = userID
+	return nil
 }
 
 func newAggMux(agg Aggregator, keys KeyProvider) *http.ServeMux {
@@ -167,5 +173,53 @@ func TestAggregateNoKeyIs409(t *testing.T) {
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
 	if rec.Code != 409 {
 		t.Errorf("status = %d; want 409 when no key linked", rec.Code)
+	}
+}
+
+func TestCacheConcurrentSameKeyGeneratesOnce(t *testing.T) {
+	agg := &fakeAggregator{projects: []redmine.Project{{ID: 1, Name: "p"}}}
+	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+
+	const n = 16
+	done := make(chan struct{}, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			req := httptest.NewRequest("GET", "/api/projects/tree", nil)
+			req = req.WithContext(WithSession(req.Context(), &SessionInfo{UserID: "same"}))
+			mux.ServeHTTP(httptest.NewRecorder(), req)
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < n; i++ {
+		<-done
+	}
+	// 同一ユーザーの並行アクセスでも上流呼び出しは 1 回（キー単位で直列化）
+	if agg.calls.Load() != 1 {
+		t.Errorf("concurrent same-user calls = %d; want 1", agg.calls.Load())
+	}
+}
+
+func TestAggregate401MarksCredentialInvalid(t *testing.T) {
+	agg := &fakeAggregator{err: redmine.ErrUnauthorized}
+	keys := &fakeKeyLoader{key: "k"}
+	mux := newAggMux(agg, keys)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
+	if rec.Code != 409 {
+		t.Fatalf("status = %d; want 409", rec.Code)
+	}
+	if keys.markedValid != "u1" {
+		t.Errorf("aggregate did not invalidate credential on upstream 401; markedValid = %q", keys.markedValid)
+	}
+}
+
+func TestAggregateTransientKeyErrorIs500(t *testing.T) {
+	// ErrNoRedmineKey 以外（DB 障害等）は 409 ではなく 500
+	agg := &fakeAggregator{}
+	mux := newAggMux(agg, &fakeKeyLoader{err: fmt.Errorf("db down")})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
+	if rec.Code != 500 || !strings.Contains(rec.Body.String(), CodeInternalError) {
+		t.Errorf("transient key error: status = %d body = %s; want 500", rec.Code, rec.Body)
 	}
 }

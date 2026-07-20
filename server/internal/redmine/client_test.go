@@ -200,3 +200,40 @@ func TestGetIssueParsesDetail(t *testing.T) {
 		t.Errorf("attachments = %+v", issue.Attachments)
 	}
 }
+
+func TestClientPaginationNoDuplicateOnShortPage(t *testing.T) {
+	// pageSize=100 だが各ページが 60 件しか返さない（total=150）状況。
+	// offset を返り件数で進めると重複するが、pageSize で進めれば重複しない。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		offset := 0
+		fmt.Sscan(r.URL.Query().Get("offset"), &offset)
+		start := offset + 1
+		end := offset + 60
+		if end > 150 {
+			end = 150
+		}
+		fmt.Fprint(w, `{"projects":[`)
+		first := true
+		for id := start; id <= end; id++ {
+			if !first {
+				fmt.Fprint(w, ",")
+			}
+			first = false
+			fmt.Fprintf(w, `{"id":%d,"name":"p%d"}`, id, id)
+		}
+		fmt.Fprint(w, `],"total_count":150}`)
+	}))
+	defer srv.Close()
+
+	projects, err := newTestClient(srv.URL, 100).ListProjects(context.Background(), "k")
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	seen := map[int]bool{}
+	for _, p := range projects {
+		if seen[p.ID] {
+			t.Errorf("duplicate project id %d (pagination overlap)", p.ID)
+		}
+		seen[p.ID] = true
+	}
+}

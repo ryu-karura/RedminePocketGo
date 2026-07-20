@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -60,9 +61,18 @@ type vaultKeyProvider struct{ vault *credential.Vault }
 func (v vaultKeyProvider) APIKeyValue(ctx context.Context, userID string) (string, error) {
 	key, err := v.vault.LoadAPIKey(ctx, userID)
 	if err != nil {
+		// 未登録・無効化済みは再紐付けを促すべき状態として集約層へ伝える。
+		// それ以外（DB 障害・復号失敗）は素通しして 500 に写像させる。
+		if errors.Is(err, credential.ErrNoCredential) || errors.Is(err, credential.ErrCredentialInvalid) {
+			return "", httpapi.ErrNoRedmineKey
+		}
 		return "", err
 	}
 	return key.Value(), nil
+}
+
+func (v vaultKeyProvider) MarkInvalid(ctx context.Context, userID string) error {
+	return v.vault.MarkInvalid(ctx, userID)
 }
 
 func main() {
@@ -187,6 +197,7 @@ func run(out io.Writer, args []string) error {
 		Redmine: rmClient,
 		Keys:    vaultKeyProvider{vault},
 		Cache:   httpapi.NewAggCache(),
+		Logger:  logger,
 	}).RegisterRoutes(apiMux)
 
 	mux := http.NewServeMux()

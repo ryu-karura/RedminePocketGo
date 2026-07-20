@@ -110,7 +110,13 @@ func BuildProjectTree(projects []Project) []*ProjectNode {
 	}
 	var sortNodes func(ns []*ProjectNode)
 	sortNodes = func(ns []*ProjectNode) {
-		sort.Slice(ns, func(a, b int) bool { return ns[a].Name < ns[b].Name })
+		// 名前が同じでも ID で確定順にし、リクエスト間で並びがぶれないようにする
+		sort.SliceStable(ns, func(a, b int) bool {
+			if ns[a].Name != ns[b].Name {
+				return ns[a].Name < ns[b].Name
+			}
+			return ns[a].ID < ns[b].ID
+		})
 		for _, n := range ns {
 			sortNodes(n.Children)
 		}
@@ -145,7 +151,7 @@ func BuildIssueTree(issues []Issue) []*IssueNode {
 	}
 	var sortNodes func(ns []*IssueNode)
 	sortNodes = func(ns []*IssueNode) {
-		sort.Slice(ns, func(a, b int) bool { return ns[a].ID < ns[b].ID })
+		sort.SliceStable(ns, func(a, b int) bool { return ns[a].ID < ns[b].ID })
 		for _, n := range ns {
 			sortNodes(n.Children)
 		}

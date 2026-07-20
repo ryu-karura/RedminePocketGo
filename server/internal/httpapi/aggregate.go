@@ -3,11 +3,11 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"net/http"
 	"strconv"
 	"sync"
 	"time"
-
-	"net/http"
 
 	"github.com/ryu-karura/RedminePocketGo/server/internal/redmine"
 )
@@ -25,10 +25,13 @@ type Aggregator interface {
 	ListPriorities(ctx context.Context, apiKey string) ([]redmine.Ref, error)
 }
 
-// KeyProvider は利用者の復号済み API キーを返す。credential.Vault を包む
-// アダプタが実装する（キーの生存期間をハンドラ内に閉じ込める）。
+// KeyProvider は利用者の復号済み API キーを返し、上流 401 時に無効化する。
+// credential.Vault を包むアダプタが実装する（キーの生存期間をハンドラ内に
+// 閉じ込める）。未連携・無効なキーは ErrNoRedmineKey を返し、それ以外の
+// エラー（DB 障害・復号失敗など）は素通しして 500 に写像させる。
 type KeyProvider interface {
 	APIKeyValue(ctx context.Context, userID string) (string, error)
+	MarkInvalid(ctx context.Context, userID string) error
 }
 
 // AggregateHandler は画面向けの集約エンドポイント（Design.md §6.4）を提供する。
@@ -36,6 +39,7 @@ type AggregateHandler struct {
 	Redmine Aggregator
 	Keys    KeyProvider
 	Cache   *AggCache
+	Logger  *slog.Logger // 任意。500 経路の原因を記録する
 }
 
 func (h *AggregateHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -54,21 +58,39 @@ func (h *AggregateHandler) resolve(w http.ResponseWriter, r *http.Request) (user
 	}
 	apiKey, err := h.Keys.APIKeyValue(r.Context(), sess.UserID)
 	if err != nil {
-		WriteError(w, CodeRedmineCredentialInvalid, "redmine account not linked")
+		if errors.Is(err, ErrNoRedmineKey) {
+			// 未連携・無効化済み → 再紐付けを促す
+			WriteError(w, CodeRedmineCredentialInvalid, "redmine account not linked")
+			return "", "", false
+		}
+		// DB 障害・復号失敗などの一時的なサーバー側エラーは 500（再紐付けを促さない）
+		h.logErr("api key load failed", sess.UserID, err)
+		WriteError(w, CodeInternalError, "credential load failed")
 		return "", "", false
 	}
 	return sess.UserID, apiKey, true
 }
 
-// writeUpstream は Redmine 由来のエラーを適切なコードへ写像する。
-func writeUpstream(w http.ResponseWriter, err error) {
+// writeUpstream は Redmine 由来のエラーを適切なコードへ写像する。上流 401 は
+// proxy と同様に保存済みキーを無効化してから 409 を返す（両経路の挙動を揃える）。
+func (h *AggregateHandler) writeUpstream(w http.ResponseWriter, r *http.Request, userID string, err error) {
 	switch {
 	case errors.Is(err, redmine.ErrUnauthorized):
+		if merr := h.Keys.MarkInvalid(r.Context(), userID); merr != nil {
+			h.logErr("mark credential invalid failed", userID, merr)
+		}
 		WriteError(w, CodeRedmineCredentialInvalid, "redmine credential is invalid; re-link required")
-	case errors.Is(err, ErrUpstream):
+	case errors.Is(err, redmine.ErrUpstream):
 		WriteError(w, CodeUpstreamError, "redmine is unavailable")
 	default:
+		h.logErr("aggregate upstream failed", userID, err)
 		WriteError(w, CodeInternalError, "aggregate failed")
+	}
+}
+
+func (h *AggregateHandler) logErr(msg, userID string, err error) {
+	if h.Logger != nil {
+		h.Logger.Error(msg, "error", err, "user_id", userID)
 	}
 }
 
@@ -86,14 +108,14 @@ func (h *AggregateHandler) projectsTree(w http.ResponseWriter, r *http.Request) 
 		return redmine.BuildProjectTree(projects), nil
 	})
 	if err != nil {
-		writeUpstream(w, err)
+		h.writeUpstream(w, r, userID, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"projects": v})
 }
 
 func (h *AggregateHandler) issuesTree(w http.ResponseWriter, r *http.Request) {
-	_, apiKey, ok := h.resolve(w, r)
+	userID, apiKey, ok := h.resolve(w, r)
 	if !ok {
 		return
 	}
@@ -104,14 +126,14 @@ func (h *AggregateHandler) issuesTree(w http.ResponseWriter, r *http.Request) {
 	}
 	issues, err := h.Redmine.ListProjectIssues(r.Context(), apiKey, projectID)
 	if err != nil {
-		writeUpstream(w, err)
+		h.writeUpstream(w, r, userID, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"issues": redmine.BuildIssueTree(issues)})
 }
 
 func (h *AggregateHandler) issueDetail(w http.ResponseWriter, r *http.Request) {
-	_, apiKey, ok := h.resolve(w, r)
+	userID, apiKey, ok := h.resolve(w, r)
 	if !ok {
 		return
 	}
@@ -122,7 +144,7 @@ func (h *AggregateHandler) issueDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	issue, err := h.Redmine.GetIssue(r.Context(), apiKey, id)
 	if err != nil {
-		writeUpstream(w, err)
+		h.writeUpstream(w, r, userID, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"issue": issue})
@@ -154,7 +176,7 @@ func (h *AggregateHandler) meta(w http.ResponseWriter, r *http.Request) {
 		}, nil
 	})
 	if err != nil {
-		writeUpstream(w, err)
+		h.writeUpstream(w, r, userID, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, v)
@@ -175,34 +197,49 @@ func NewAggCache() *AggCache {
 	}
 }
 
-type cacheEntry struct {
+// cacheSlot は 1 キー分の値と、そのキー専用のロック。gen() の実行を
+// キー単位で直列化しつつ、別キー（別ユーザー）は互いにブロックしない。
+type cacheSlot struct {
+	mu        sync.Mutex
 	value     any
 	expiresAt time.Time
+	set       bool
 }
 
-// ttlCache は userID ごとに 1 値を TTL 付きで保持する。生成関数の実行は
-// 同一キーで直列化し、TTL 内はキャッシュを返す。
+// ttlCache は userID ごとに 1 値を TTL 付きで保持する。グローバルロックは
+// スロットの取得・生成の間だけ握り、上流取得（gen）中はキー専用ロックのみ
+// を握るので、あるユーザーの遅い上流呼び出しが他ユーザーを止めない。
 type ttlCache struct {
 	mu  sync.Mutex
 	ttl time.Duration
-	m   map[string]cacheEntry
+	m   map[string]*cacheSlot
 	now func() time.Time
 }
 
 func newTTLCache(ttl time.Duration) *ttlCache {
-	return &ttlCache{ttl: ttl, m: map[string]cacheEntry{}, now: time.Now}
+	return &ttlCache{ttl: ttl, m: map[string]*cacheSlot{}, now: time.Now}
 }
 
 func (c *ttlCache) get(key string, gen func() (any, error)) (any, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if e, ok := c.m[key]; ok && c.now().Before(e.expiresAt) {
-		return e.value, nil
+	slot := c.m[key]
+	if slot == nil {
+		slot = &cacheSlot{}
+		c.m[key] = slot
+	}
+	c.mu.Unlock()
+
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	if slot.set && c.now().Before(slot.expiresAt) {
+		return slot.value, nil
 	}
 	v, err := gen()
 	if err != nil {
-		return nil, err
+		return nil, err // エラーはキャッシュしない
 	}
-	c.m[key] = cacheEntry{value: v, expiresAt: c.now().Add(c.ttl)}
+	slot.value = v
+	slot.expiresAt = c.now().Add(c.ttl)
+	slot.set = true
 	return v, nil
 }
