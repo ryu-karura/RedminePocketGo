@@ -3,8 +3,6 @@ package auth
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"math/big"
 	"time"
@@ -59,7 +57,5 @@ func (e *Enrollment) Redeem(ctx context.Context, code string) (optionsJSON []byt
 	return e.webauthn.BeginRegistration(ctx, userID)
 }
 
-func hashCode(code string) string {
-	sum := sha256.Sum256([]byte(code))
-	return hex.EncodeToString(sum[:])
-}
+// hashCode は登録コードのハッシュ（DB には生コードを保存しない）。
+func hashCode(code string) string { return sha256Hex(code) }

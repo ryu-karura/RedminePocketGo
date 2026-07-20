@@ -143,6 +143,9 @@ func (w *WebAuthn) FinishRegistration(ctx context.Context, challengeID string, r
 	if err != nil {
 		return "", nil, fmt.Errorf("%w: %w", ErrCeremonyFailed, err)
 	}
+	if cred.Authenticator.CloneWarning {
+		return "", nil, fmt.Errorf("%w: 署名カウンタの退行を検知しました", ErrCeremonyFailed)
+	}
 
 	transports := make([]string, 0, len(cred.Transport))
 	for _, t := range cred.Transport {
@@ -158,6 +161,10 @@ func (w *WebAuthn) FinishRegistration(ctx context.Context, challengeID string, r
 		BackupEligible: cred.Flags.BackupEligible,
 		CreatedAt:      w.now().UTC(),
 	}); err != nil {
+		// 登録済みパスキーの再登録は利用者側の誤操作 → 4xx に倒す
+		if errors.Is(err, store.ErrDuplicateCredential) {
+			return "", nil, fmt.Errorf("%w: %w", ErrCeremonyFailed, err)
+		}
 		return "", nil, err
 	}
 	return u.ID, cred.ID, nil
@@ -203,6 +210,11 @@ func (w *WebAuthn) FinishLogin(ctx context.Context, challengeID string, r *http.
 	_, cred, err := w.wa.FinishPasskeyLogin(handler, *sd, r)
 	if err != nil {
 		return "", nil, fmt.Errorf("%w: %w", ErrCeremonyFailed, err)
+	}
+	// 署名カウンタの退行は認証器の複製を示す。go-webauthn はここを
+	// エラーにせず CloneWarning フラグで知らせるため、明示的に拒否する。
+	if cred.Authenticator.CloneWarning {
+		return "", nil, fmt.Errorf("%w: 署名カウンタの退行を検知しました（認証器の複製の疑い）", ErrCeremonyFailed)
 	}
 	if err := w.store.UpdateCredentialUsage(ctx, cred.ID, cred.Authenticator.SignCount, w.now().UTC()); err != nil {
 		return "", nil, err

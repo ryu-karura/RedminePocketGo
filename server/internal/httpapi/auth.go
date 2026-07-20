@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ryu-karura/RedminePocketGo/server/internal/store"
@@ -61,8 +62,18 @@ type AuthHandler struct {
 	CookieName string
 }
 
-// limiterKey はレート制限のキー。ログイン経路はクライアント IP 単位。
+// limiterKey はレート制限のキー（クライアント IP 単位）。本アプリは
+// 単一の信頼できるリバースプロキシ（Host Apache。CLAUDE.md §1）の背後に
+// 置かれるため、RemoteAddr は常にプロキシのアドレスになる。プロキシが
+// 付与する X-Forwarded-For の最右要素が実クライアント IP であり、
+// クライアントが偽装した左側の値には影響されない。
 func limiterKey(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		if ip := strings.TrimSpace(parts[len(parts)-1]); ip != "" {
+			return ip
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -150,7 +161,9 @@ func (h *AuthHandler) bootstrap(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, CodeInvalidRequest, "login and password are required")
 		return
 	}
-	key := "bootstrap:" + body.Login
+	// キーは攻撃者が値を選べる login ではなくクライアント IP にする
+	// （login キーだと標的ユーザーを狙ったロックアウト DoS が可能）。
+	key := "bootstrap:" + limiterKey(r)
 	if h.Limiter != nil && !h.Limiter.Allow(key) {
 		WriteError(w, CodeRateLimited, "too many failed attempts")
 		return

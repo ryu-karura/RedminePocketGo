@@ -5,8 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
+
+// ErrDuplicateCredential は既に登録済みのパスキー（Credential ID の
+// 主キー衝突）。ハンドラは 4xx に写像する。
+var ErrDuplicateCredential = errors.New("store: このパスキーは既に登録されています")
 
 // Credential はパスキー 1 件（Design.md §5.2）。端末ごとに 1 行。
 type Credential struct {
@@ -32,9 +37,18 @@ func (s *Store) InsertCredential(ctx context.Context, c *Credential) error {
 		c.Transports, c.DeviceLabel, c.DeviceKind, c.BackupEligible, fmtTime(c.CreatedAt),
 	)
 	if err != nil {
+		if isConstraintErr(err) {
+			return ErrDuplicateCredential
+		}
 		return fmt.Errorf("store: パスキー保存に失敗しました: %w", err)
 	}
 	return nil
+}
+
+// isConstraintErr は主キー/一意制約違反かを判定する（modernc.org/sqlite は
+// メッセージに "constraint" を含む）。
+func isConstraintErr(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "constraint")
 }
 
 // ListCredentialsByUser は利用者のパスキー一覧を返す（作成順）。
@@ -111,13 +125,14 @@ func (s *Store) InsertChallenge(ctx context.Context, id, userID, kind string, da
 	return nil
 }
 
-// TakeChallenge はチャレンジを 1 回限りで取り出す（取り出しと同時に削除）。
-// 存在しない・期限切れ・kind 不一致は ok=false。
+// TakeChallenge はチャレンジを 1 回限りで取り出す。DELETE ... RETURNING で
+// 取り出しと削除を単一文にし、同一チャレンジの同時消費を防ぐ（同時実行で
+// 行を取れるのは 1 つだけ）。存在しない・期限切れ・kind 不一致は ok=false。
 func (s *Store) TakeChallenge(ctx context.Context, id, kind string, now time.Time) (userID string, data []byte, ok bool, err error) {
 	var uid sql.NullString
 	var expires string
 	err = s.db.QueryRowContext(ctx,
-		"SELECT user_id, data, expires_at FROM webauthn_challenges WHERE id = ? AND kind = ?",
+		"DELETE FROM webauthn_challenges WHERE id = ? AND kind = ? RETURNING user_id, data, expires_at",
 		id, kind,
 	).Scan(&uid, &data, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -125,9 +140,6 @@ func (s *Store) TakeChallenge(ctx context.Context, id, kind string, now time.Tim
 	}
 	if err != nil {
 		return "", nil, false, fmt.Errorf("store: チャレンジ取得に失敗しました: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx, "DELETE FROM webauthn_challenges WHERE id = ?", id); err != nil {
-		return "", nil, false, fmt.Errorf("store: チャレンジ削除に失敗しました: %w", err)
 	}
 	exp, err := parseTime(expires)
 	if err != nil {
@@ -162,23 +174,21 @@ func (s *Store) InsertEnrollmentCode(ctx context.Context, codeHash, userID strin
 	return nil
 }
 
-// ConsumeEnrollmentCode はコードを 1 回限りで消費する。
-// 不明・期限切れ・使用済みは ok=false。
+// ConsumeEnrollmentCode はコードを 1 回限りで消費する。未使用の行だけを
+// 単一文でマークして取り出すため、同時消費でも成立するのは 1 つだけ。
+// 不明・期限切れ・使用済みは ok=false（期限切れの行も used に倒すが害はない）。
 func (s *Store) ConsumeEnrollmentCode(ctx context.Context, codeHash string, now time.Time) (userID string, ok bool, err error) {
 	var expires string
-	var used sql.NullString
 	err = s.db.QueryRowContext(ctx,
-		"SELECT user_id, expires_at, used_at FROM enrollment_codes WHERE code_hash = ?",
-		codeHash,
-	).Scan(&userID, &expires, &used)
+		"UPDATE enrollment_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL RETURNING user_id, expires_at",
+		fmtTime(now), codeHash,
+	).Scan(&userID, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
+		// 不明・使用済み（既に used_at が入っている）
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("store: 登録コード取得に失敗しました: %w", err)
-	}
-	if used.Valid {
-		return "", false, nil
 	}
 	exp, err := parseTime(expires)
 	if err != nil {
@@ -186,11 +196,6 @@ func (s *Store) ConsumeEnrollmentCode(ctx context.Context, codeHash string, now 
 	}
 	if now.After(exp) {
 		return "", false, nil
-	}
-	if _, err := s.db.ExecContext(ctx,
-		"UPDATE enrollment_codes SET used_at = ? WHERE code_hash = ?", fmtTime(now), codeHash,
-	); err != nil {
-		return "", false, fmt.Errorf("store: 登録コードの使用記録に失敗しました: %w", err)
 	}
 	return userID, true, nil
 }

@@ -306,3 +306,28 @@ func TestEnrollmentEndpoints(t *testing.T) {
 		}
 	})
 }
+
+func TestLimiterKeyUsesForwardedFor(t *testing.T) {
+	tests := []struct {
+		name string
+		xff  string
+		addr string
+		want string
+	}{
+		{"no xff falls back to remote", "", "10.0.0.9:1234", "10.0.0.9"},
+		{"single proxy hop uses rightmost", "203.0.113.5", "127.0.0.1:8090", "203.0.113.5"},
+		{"spoofed left ignored, rightmost trusted", "1.1.1.1, 203.0.113.5", "127.0.0.1:8090", "203.0.113.5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest("POST", "/x", nil)
+			r.RemoteAddr = tt.addr
+			if tt.xff != "" {
+				r.Header.Set("X-Forwarded-For", tt.xff)
+			}
+			if got := limiterKey(r); got != tt.want {
+				t.Errorf("limiterKey = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}

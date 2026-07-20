@@ -10,6 +10,8 @@ import (
 
 	virtualwebauthn "github.com/descope/virtualwebauthn"
 
+	"github.com/ryu-karura/RedminePocketGo/server/internal/httpapi"
+
 	"github.com/ryu-karura/RedminePocketGo/server/internal/store"
 )
 
@@ -188,5 +190,31 @@ func TestLoginWithForeignCredentialFails(t *testing.T) {
 
 	if _, _, err := w.FinishLogin(ctx, loginChallenge, req); !errors.Is(err, ErrCeremonyFailed) {
 		t.Fatalf("unregistered credential: err = %v; want ErrCeremonyFailed", err)
+	}
+}
+
+func TestDuplicateRegistrationIsCeremonyError(t *testing.T) {
+	w, _ := newTestWebAuthn(t)
+	ctx := context.Background()
+	rp, auth, cred := newVirtualAuthenticator()
+
+	do := func() error {
+		optionsJSON, challengeID, err := w.BeginRegistration(ctx, "u1")
+		if err != nil {
+			return err
+		}
+		attOpts, _ := virtualwebauthn.ParseAttestationOptions(string(optionsJSON))
+		body := virtualwebauthn.CreateAttestationResponse(rp, auth, cred, *attOpts)
+		req := httptest.NewRequest("POST", "/x", bytes.NewReader([]byte(body)))
+		req.Header.Set("Content-Type", "application/json")
+		_, _, err = w.FinishRegistration(ctx, challengeID, req)
+		return err
+	}
+	if err := do(); err != nil {
+		t.Fatalf("first registration: %v", err)
+	}
+	// 同じ認証器・同じ鍵での再登録は 4xx 相当（ErrInvalidRequest 系）
+	if err := do(); !errors.Is(err, ErrCeremonyFailed) || !errors.Is(err, httpapi.ErrInvalidRequest) {
+		t.Fatalf("duplicate registration err = %v; want ErrCeremonyFailed wrapping ErrInvalidRequest", err)
 	}
 }

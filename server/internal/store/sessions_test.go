@@ -145,3 +145,28 @@ func TestRenameAndDeleteCredentialScopedToOwner(t *testing.T) {
 		t.Error("credential not deleted")
 	}
 }
+
+func TestEnrollmentCodeConcurrentSingleUse(t *testing.T) {
+	s := migratedStore(t)
+	ctx := context.Background()
+	if err := s.InsertEnrollmentCode(ctx, "codehash", "u1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	const n = 20
+	results := make(chan bool, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			uid, ok, err := s.ConsumeEnrollmentCode(ctx, "codehash", time.Now())
+			results <- (ok && err == nil && uid == "u1")
+		}()
+	}
+	wins := 0
+	for i := 0; i < n; i++ {
+		if <-results {
+			wins++
+		}
+	}
+	if wins != 1 {
+		t.Errorf("concurrent consume winners = %d; want exactly 1 (single-use violated)", wins)
+	}
+}

@@ -15,6 +15,10 @@ import (
 	"github.com/ryu-karura/RedminePocketGo/server/internal/store"
 )
 
+// touchInterval は last_seen_at を書き込む最小間隔。これ未満の連続
+// アクセスでは書き込みを省き、SQLite の書き込み集中を避ける。
+const touchInterval = time.Minute
+
 // Config はセッションの動作設定（config.Session から組み立てる）。
 type Config struct {
 	IdleTimeout     time.Duration
@@ -74,8 +78,12 @@ func (s *Sessions) ResolveSession(ctx context.Context, token string) (*httpapi.S
 		}
 		return nil, nil
 	}
-	if err := s.store.TouchSession(ctx, sess.IDHash, now); err != nil {
-		return nil, err
+	// last_seen_at の更新はホットパス上の直列化書き込み。アイドル判定に
+	// 秒単位の精度は要らないため、touchInterval を跨いだ時だけ書き込む。
+	if now.Sub(sess.LastSeenAt) >= touchInterval {
+		if err := s.store.TouchSession(ctx, sess.IDHash, now); err != nil {
+			return nil, err
+		}
 	}
 	return &httpapi.SessionInfo{UserID: sess.UserID}, nil
 }
@@ -112,7 +120,11 @@ func (s *Sessions) ClearCookie() *http.Cookie {
 	}
 }
 
-func hashToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
+func hashToken(token string) string { return sha256Hex(token) }
+
+// sha256Hex は文字列の SHA-256 を 16 進で返す。セッショントークンや
+// 登録コードのように、生値を保存せずハッシュだけを突き合わせる用途に使う。
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
