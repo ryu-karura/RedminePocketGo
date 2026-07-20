@@ -194,3 +194,51 @@ func (s *Store) ConsumeEnrollmentCode(ctx context.Context, codeHash string, now 
 	}
 	return userID, true, nil
 }
+
+// RenameCredential は利用者自身のパスキーの表示名を変更する。
+// 対象が無い・他人のものなら false。
+func (s *Store) RenameCredential(ctx context.Context, id []byte, userID, label string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE credentials SET device_label = ? WHERE id = ? AND user_id = ?",
+		label, id, userID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: パスキー名の変更に失敗しました: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: 変更結果の確認に失敗しました: %w", err)
+	}
+	return n > 0, nil
+}
+
+// DeleteCredentialAndSessions は利用者自身のパスキーを削除し、同一
+// トランザクションで該当セッションを即失効させる（Design.md §3.5）。
+func (s *Store) DeleteCredentialAndSessions(ctx context.Context, id []byte, userID string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("store: トランザクション開始に失敗しました: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
+		"DELETE FROM credentials WHERE id = ? AND user_id = ?", id, userID)
+	if err != nil {
+		return false, fmt.Errorf("store: パスキー削除に失敗しました: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: 削除結果の確認に失敗しました: %w", err)
+	}
+	if n == 0 {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM sessions WHERE credential_id = ?", id); err != nil {
+		return false, fmt.Errorf("store: パスキーのセッション失効に失敗しました: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("store: 削除のコミットに失敗しました: %w", err)
+	}
+	return true, nil
+}

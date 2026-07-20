@@ -102,3 +102,46 @@ func TestSessionDelete(t *testing.T) {
 		t.Error("session b still present after credential revocation")
 	}
 }
+
+func TestRenameAndDeleteCredentialScopedToOwner(t *testing.T) {
+	s := migratedStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	cred := &Credential{ID: []byte{1}, UserID: "u1", PublicKey: []byte{2}, CreatedAt: now}
+	if err := s.InsertCredential(ctx, cred); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertSession(ctx, &Session{
+		IDHash: "h1", UserID: "u1", CredentialID: cred.ID,
+		CreatedAt: now, LastSeenAt: now, AbsoluteExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 他人のパスキーは変更も削除もできない
+	if ok, err := s.RenameCredential(ctx, cred.ID, "someone-else", "x"); err != nil || ok {
+		t.Errorf("rename by non-owner: ok=%v err=%v; want false", ok, err)
+	}
+	if ok, err := s.DeleteCredentialAndSessions(ctx, cred.ID, "someone-else"); err != nil || ok {
+		t.Errorf("delete by non-owner: ok=%v err=%v; want false", ok, err)
+	}
+
+	if ok, err := s.RenameCredential(ctx, cred.ID, "u1", "iPhone"); err != nil || !ok {
+		t.Fatalf("rename: ok=%v err=%v", ok, err)
+	}
+	creds, _ := s.ListCredentialsByUser(ctx, "u1")
+	if len(creds) != 1 || creds[0].DeviceLabel != "iPhone" {
+		t.Errorf("label not updated: %+v", creds)
+	}
+
+	// 削除で該当セッションも同時に失効する
+	if ok, err := s.DeleteCredentialAndSessions(ctx, cred.ID, "u1"); err != nil || !ok {
+		t.Fatalf("delete: ok=%v err=%v", ok, err)
+	}
+	if got, _ := s.GetSession(ctx, "h1"); got != nil {
+		t.Error("session survived credential deletion")
+	}
+	if creds, _ := s.ListCredentialsByUser(ctx, "u1"); len(creds) != 0 {
+		t.Error("credential not deleted")
+	}
+}

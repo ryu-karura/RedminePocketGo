@@ -123,6 +123,7 @@ func run(out io.Writer, args []string) error {
 		Enrollment: auth.NewEnrollment(st, wa),
 		CookieName: cfg.Session.CookieName,
 	}).RegisterRoutes(apiMux)
+	(&httpapi.DeviceHandler{Devices: st}).RegisterRoutes(apiMux)
 
 	mux := http.NewServeMux()
 	if cfg.BaseURL != "" {
