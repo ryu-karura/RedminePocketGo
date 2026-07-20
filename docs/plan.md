@@ -149,7 +149,7 @@
       `js/common/table.js` ラッパー（dataTree 対応）
 - [x] `login` 画面（パスキー主導線、登録コード、ブートストラップ。
       4 状態と失敗のインライン表示。Design.md §7.5）
-- [ ] `server/e2e/` E2E ハーネス（chromedp + 同梱 Chromium、build tag
+- [x] `server/e2e/` E2E ハーネス（chromedp + 同梱 Chromium、build tag
       `e2e`、`make test-e2e` ターゲット、CDP WebAuthn 仮想認証器。
       npm 依存なし — CLAUDE.md §3.1 と非抵触）
 
