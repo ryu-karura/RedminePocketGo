@@ -103,11 +103,11 @@
       （KEK はファイル、ノンスはレコード毎、`MarshalJSON` は `"[redacted]"`）
 - [x] `internal/proxy`: 許可リスト（`allowlist.go` に宣言的列挙、
       一致しなければ 404。Design.md §6.2）
-- [ ] `internal/proxy`: ヘッダー制御（`X-Redmine-API-Key` 受信は 400、
+- [x] `internal/proxy`: ヘッダー制御（`X-Redmine-API-Key` 受信は 400、
       `Authorization` / `Cookie` / `X-Redmine-Switch-User` は転送禁止）
-- [ ] 上流 401 → キー無効化 + 409 `redmine_credential_invalid`、
+- [x] 上流 401 → キー無効化 + 409 `redmine_credential_invalid`、
       上流 5xx → 502 `upstream_error`
-- [ ] サブ URI 結合（`redmine.baseURL` + `redmine.subURI` + API パス。
+- [x] サブ URI 結合（`redmine.baseURL` + `redmine.subURI` + API パス。
       ハードコード禁止）
 
 完了条件: `make test-api` 緑。許可リスト外 404、ヘッダー拒否・除去、

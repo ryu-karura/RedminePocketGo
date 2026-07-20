@@ -20,6 +20,7 @@ import (
 	"github.com/ryu-karura/RedminePocketGo/server/internal/config"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/credential"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/httpapi"
+	"github.com/ryu-karura/RedminePocketGo/server/internal/proxy"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/store"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/webfs"
 )
@@ -141,6 +142,14 @@ func run(out io.Writer, args []string) error {
 		CookieName: cfg.Session.CookieName,
 	}).RegisterRoutes(apiMux)
 	(&httpapi.DeviceHandler{Devices: st}).RegisterRoutes(apiMux)
+
+	// Redmine 中継（許可リスト経由。/api/redmine/ 配下）
+	relay := proxy.New(vault, proxy.Config{
+		BaseURL: cfg.Redmine.BaseURL,
+		SubURI:  cfg.Redmine.SubURI,
+		Timeout: time.Duration(cfg.Redmine.TimeoutSeconds) * time.Second,
+	})
+	apiMux.HandleFunc("/api/redmine/", relay.Handler("/api/redmine"))
 
 	mux := http.NewServeMux()
 	if cfg.BaseURL != "" {

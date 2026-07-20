@@ -37,6 +37,10 @@ func (k *APIKey) MarshalJSON() ([]byte, error) { return []byte(`"[redacted]"`), 
 // String も伏せる（%v / %s での誤露出防止）。
 func (k *APIKey) String() string { return "[redacted]" }
 
+// NewTestAPIKey は既知の平文から APIKey を組み立てる。中継層のテストや、
+// 保管庫を介さずキーを扱う配線で使う（redaction の性質は保たれる）。
+func NewTestAPIKey(value string) *APIKey { return &APIKey{value: value} }
+
 // Vault は暗号化保管庫。
 type Vault struct {
 	store      *store.Store

@@ -165,6 +165,12 @@ func SessionFrom(ctx context.Context) *SessionInfo {
 	return info
 }
 
+// WithSession はコンテキストに利用者情報を載せる。ミドルウェアを経ない
+// 単体テストや、認証済み前提のサブハンドラの組み立てに使う。
+func WithSession(ctx context.Context, info *SessionInfo) context.Context {
+	return context.WithValue(ctx, ctxKeySession, info)
+}
+
 // RequireXHRForWrites は更新系メソッドに X-Requested-With:
 // XMLHttpRequest を要求する（CSRF 対策。テンプレートの慣例）。
 func RequireXHRForWrites(next http.Handler) http.Handler {
