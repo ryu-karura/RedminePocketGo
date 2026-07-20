@@ -10,7 +10,7 @@ import (
 	"github.com/ryu-karura/RedminePocketGo/server/internal/store"
 )
 
-func testStore(t *testing.T) *store.Store {
+func testStoreEmpty(t *testing.T) *store.Store {
 	t.Helper()
 	s, err := store.Open("file:" + filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
@@ -20,6 +20,12 @@ func testStore(t *testing.T) *store.Store {
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
+	return s
+}
+
+func testStore(t *testing.T) *store.Store {
+	t.Helper()
+	s := testStoreEmpty(t)
 	if err := s.CreateUser(context.Background(), &store.User{
 		ID: "u1", RedmineLogin: "alice", DisplayName: "Alice", WebAuthnUserHandle: []byte{1},
 	}); err != nil {

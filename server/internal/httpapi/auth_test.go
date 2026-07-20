@@ -169,3 +169,66 @@ func TestLoginFinishRateLimit(t *testing.T) {
 		}
 	})
 }
+
+type fakeBootstrap struct{ err error }
+
+func (f *fakeBootstrap) Run(context.Context, string, string) ([]byte, string, error) {
+	return []byte(`{"publicKey":{}}`), "ch-b", f.err
+}
+
+func TestBootstrapEndpoint(t *testing.T) {
+	newMux := func(b BootstrapService, lim Limiter) *http.ServeMux {
+		mux := http.NewServeMux()
+		(&AuthHandler{WebAuthn: &fakeWebAuthn{}, Sessions: &fakeSessions{},
+			Bootstrap: b, Limiter: lim, CookieName: "rmapp_session"}).RegisterRoutes(mux)
+		return mux
+	}
+	post := func(mux *http.ServeMux, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/auth/bootstrap", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+	valid := `{"login":"alice","password":"secret"}`
+
+	tests := []struct {
+		name       string
+		service    BootstrapService
+		limiter    *fakeLimiter
+		body       string
+		wantStatus int
+		wantBody   string
+	}{
+		{"disabled is 404", nil, nil, valid, 404, CodeNotFound},
+		{"malformed body", &fakeBootstrap{}, nil, "{", 400, CodeInvalidRequest},
+		{"missing password", &fakeBootstrap{}, nil, `{"login":"alice"}`, 400, CodeInvalidRequest},
+		{"bad credentials", &fakeBootstrap{err: fmt.Errorf("%w: no", ErrUnauthenticated)},
+			&fakeLimiter{allow: true}, valid, 401, CodeUnauthenticated},
+		{"upstream down", &fakeBootstrap{err: fmt.Errorf("%w: 503", ErrUpstream)},
+			&fakeLimiter{allow: true}, valid, 502, CodeUpstreamError},
+		{"rate limited", &fakeBootstrap{}, &fakeLimiter{allow: false}, valid, 429, CodeRateLimited},
+		{"success", &fakeBootstrap{}, &fakeLimiter{allow: true}, valid, 200, `"challengeId":"ch-b"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := post(newMux(tt.service, limOrNil(tt.limiter)), tt.body)
+			if rec.Code != tt.wantStatus || !strings.Contains(rec.Body.String(), tt.wantBody) {
+				t.Errorf("status = %d body = %s; want %d containing %q", rec.Code, rec.Body, tt.wantStatus, tt.wantBody)
+			}
+			if tt.name == "bad credentials" && tt.limiter.fails != 1 {
+				t.Errorf("limiter fails = %d; want 1", tt.limiter.fails)
+			}
+			if tt.name == "success" && tt.limiter.successes != 1 {
+				t.Errorf("limiter successes = %d; want 1", tt.limiter.successes)
+			}
+		})
+	}
+}
+
+func limOrNil(l *fakeLimiter) Limiter {
+	if l == nil {
+		return nil
+	}
+	return l
+}

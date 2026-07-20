@@ -38,12 +38,18 @@ type Limiter interface {
 	Succeed(key string)
 }
 
+// BootstrapService は初回登録（auth.Bootstrap が実装する）。
+type BootstrapService interface {
+	Run(ctx context.Context, login, password string) (optionsJSON []byte, challengeID string, err error)
+}
+
 // AuthHandler は認証エンドポイント（Design.md §3.2）を提供する。
 type AuthHandler struct {
 	WebAuthn   WebAuthnService
 	Sessions   SessionService
 	Users      UserGetter
 	Limiter    Limiter
+	Bootstrap  BootstrapService // nil なら機能無効（features.passwordBootstrap）
 	CookieName string
 }
 
@@ -64,6 +70,46 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/login/finish", h.loginFinish)
 	mux.HandleFunc("GET /api/auth/me", h.me)
 	mux.HandleFunc("POST /api/auth/logout", h.logout)
+	mux.HandleFunc("POST /api/auth/bootstrap", h.bootstrap)
+}
+
+// bootstrap は Redmine 認証情報での初回登録（Design.md §3.3）。
+// 成功すると登録セレモニーの開始情報を返す。
+func (h *AuthHandler) bootstrap(w http.ResponseWriter, r *http.Request) {
+	if h.Bootstrap == nil {
+		WriteError(w, CodeNotFound, "password bootstrap is disabled")
+		return
+	}
+	var body struct {
+		Login    string `json:"login"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Login == "" || body.Password == "" {
+		WriteError(w, CodeInvalidRequest, "login and password are required")
+		return
+	}
+	key := "bootstrap:" + body.Login
+	if h.Limiter != nil && !h.Limiter.Allow(key) {
+		WriteError(w, CodeRateLimited, "too many failed attempts")
+		return
+	}
+	options, challengeID, err := h.Bootstrap.Run(r.Context(), body.Login, body.Password)
+	switch {
+	case err == nil:
+		if h.Limiter != nil {
+			h.Limiter.Succeed(key)
+		}
+		WriteJSON(w, http.StatusOK, ceremonyResponse{ChallengeID: challengeID, Options: options})
+	case errors.Is(err, ErrUnauthenticated):
+		if h.Limiter != nil {
+			h.Limiter.Fail(key)
+		}
+		WriteError(w, CodeUnauthenticated, "redmine authentication failed")
+	case errors.Is(err, ErrUpstream):
+		WriteError(w, CodeUpstreamError, "redmine is unavailable")
+	default:
+		WriteError(w, CodeInternalError, "bootstrap failed")
+	}
 }
 
 // me は SPA 起動時に呼ばれる現在セッション情報（Design.md §3.2）。

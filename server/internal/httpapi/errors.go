@@ -15,6 +15,10 @@ import (
 var (
 	// ErrInvalidRequest は入力不正として 400 系に写像されるべきエラー。
 	ErrInvalidRequest = errors.New("invalid request")
+	// ErrUnauthenticated は認証失敗として 401 に写像されるべきエラー。
+	ErrUnauthenticated = errors.New("unauthenticated")
+	// ErrUpstream は上流（Redmine）障害として 502 に写像されるべきエラー。
+	ErrUpstream = errors.New("upstream error")
 )
 
 // Design.md §6.5 のエラーコード。snake_case の識別子。

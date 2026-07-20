@@ -86,7 +86,7 @@
       （`/api/auth/login/begin` / `finish`）
 - [x] `GET /api/auth/me` / `POST /api/auth/logout`
 - [x] レート制限（連続 5 回失敗で 60 秒ロック）
-- [ ] パスワードブートストラップ（Redmine `/my/account.json` に Basic 認証、
+- [x] パスワードブートストラップ（Redmine `/my/account.json` に Basic 認証、
       不存在ユーザーにも同等処理時間、パスワードは保存しない。Design.md §3.3）
 - [ ] 登録コードによる端末追加（6 桁、10 分、1 回限り。Design.md §3.4）
 - [ ] 端末（パスキー）一覧・名称変更・削除 API。削除時に該当セッション即失効

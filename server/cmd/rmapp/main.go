@@ -23,6 +23,16 @@ import (
 
 var version = "dev"
 
+// stubVault はフェーズ 3（internal/credential）が入るまでの暫定実装。
+// 平文保存はしない方針のため、キーは保存せず警告だけ残す（キー自体は
+// ログに書かない）。
+type stubVault struct{ logger *slog.Logger }
+
+func (v stubVault) SaveAPIKey(_ context.Context, userID, _ string) error {
+	v.logger.Warn("credential vault not yet implemented; api key NOT stored", "user_id", userID)
+	return nil
+}
+
 func main() {
 	if err := run(os.Stdout, os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "rmapp:", err)
@@ -90,6 +100,15 @@ func run(out io.Writer, args []string) error {
 		return err
 	}
 
+	var bootstrapSvc httpapi.BootstrapService
+	if cfg.Features.PasswordBootstrap {
+		bootstrapSvc = auth.NewBootstrap(st, wa, stubVault{logger}, auth.BootstrapConfig{
+			BaseURL: cfg.Redmine.BaseURL,
+			SubURI:  cfg.Redmine.SubURI,
+			Timeout: time.Duration(cfg.Redmine.TimeoutSeconds) * time.Second,
+		})
+	}
+
 	apiMux := http.NewServeMux()
 	// 未実装の /api パスはエンベロープの 404（個別ルートが優先される）。
 	apiMux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
@@ -100,6 +119,7 @@ func run(out io.Writer, args []string) error {
 		Sessions:   sessions,
 		Users:      st,
 		Limiter:    auth.NewRateLimiter(5, 60*time.Second),
+		Bootstrap:  bootstrapSvc,
 		CookieName: cfg.Session.CookieName,
 	}).RegisterRoutes(apiMux)
 
