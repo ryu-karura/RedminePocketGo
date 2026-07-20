@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 
 	"github.com/ryu-karura/RedminePocketGo/server/internal/store"
@@ -30,12 +31,29 @@ type UserGetter interface {
 	GetUserByID(ctx context.Context, id string) (*store.User, error)
 }
 
+// Limiter はログイン試行のレート制限（auth.RateLimiter が実装する）。
+type Limiter interface {
+	Allow(key string) bool
+	Fail(key string)
+	Succeed(key string)
+}
+
 // AuthHandler は認証エンドポイント（Design.md §3.2）を提供する。
 type AuthHandler struct {
 	WebAuthn   WebAuthnService
 	Sessions   SessionService
 	Users      UserGetter
+	Limiter    Limiter
 	CookieName string
+}
+
+// limiterKey はレート制限のキー。ログイン経路はクライアント IP 単位。
+func limiterKey(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // RegisterRoutes は認証ルートを mux に登録する。
@@ -142,15 +160,26 @@ func (h *AuthHandler) loginFinish(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, CodeInvalidRequest, "challengeId query parameter is required")
 		return
 	}
+	key := limiterKey(r)
+	if h.Limiter != nil && !h.Limiter.Allow(key) {
+		WriteError(w, CodeRateLimited, "too many failed login attempts")
+		return
+	}
 	userID, credentialID, err := h.WebAuthn.FinishLogin(r.Context(), challengeID, r)
 	if err != nil {
 		if errors.Is(err, ErrInvalidRequest) {
+			if h.Limiter != nil {
+				h.Limiter.Fail(key)
+			}
 			// 認証失敗の詳細は返さない
 			WriteError(w, CodeUnauthenticated, "authentication failed")
 			return
 		}
 		WriteError(w, CodeInternalError, "finish login failed")
 		return
+	}
+	if h.Limiter != nil {
+		h.Limiter.Succeed(key)
 	}
 	h.issueSession(w, r, userID, credentialID)
 }

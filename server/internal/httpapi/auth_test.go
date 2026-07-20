@@ -124,3 +124,48 @@ func TestAuthEndpoints(t *testing.T) {
 		})
 	}
 }
+
+type fakeLimiter struct {
+	allow            bool
+	fails, successes int
+}
+
+func (f *fakeLimiter) Allow(string) bool { return f.allow }
+func (f *fakeLimiter) Fail(string)       { f.fails++ }
+func (f *fakeLimiter) Succeed(string)    { f.successes++ }
+
+func TestLoginFinishRateLimit(t *testing.T) {
+	t.Run("locked is 429", func(t *testing.T) {
+		lim := &fakeLimiter{allow: false}
+		mux := http.NewServeMux()
+		(&AuthHandler{WebAuthn: &fakeWebAuthn{userID: "u1"}, Sessions: &fakeSessions{},
+			Limiter: lim, CookieName: "rmapp_session"}).RegisterRoutes(mux)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/auth/login/finish?challengeId=x", strings.NewReader("{}")))
+		if rec.Code != 429 || !strings.Contains(rec.Body.String(), CodeRateLimited) {
+			t.Errorf("status = %d body = %s; want 429 rate_limited", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("failure counts, success resets", func(t *testing.T) {
+		lim := &fakeLimiter{allow: true}
+		mux := http.NewServeMux()
+		(&AuthHandler{
+			WebAuthn: &fakeWebAuthn{finishErr: fmt.Errorf("%w: bad signature", ErrInvalidRequest)},
+			Sessions: &fakeSessions{}, Limiter: lim, CookieName: "rmapp_session"}).RegisterRoutes(mux)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/auth/login/finish?challengeId=x", strings.NewReader("{}")))
+		if lim.fails != 1 {
+			t.Errorf("fails = %d; want 1", lim.fails)
+		}
+
+		mux = http.NewServeMux()
+		(&AuthHandler{WebAuthn: &fakeWebAuthn{userID: "u1"}, Sessions: &fakeSessions{},
+			Limiter: lim, CookieName: "rmapp_session"}).RegisterRoutes(mux)
+		rec = httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/auth/login/finish?challengeId=x", strings.NewReader("{}")))
+		if lim.successes != 1 {
+			t.Errorf("successes = %d; want 1", lim.successes)
+		}
+	})
+}

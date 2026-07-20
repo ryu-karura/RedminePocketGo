@@ -99,6 +99,7 @@ func run(out io.Writer, args []string) error {
 		WebAuthn:   wa,
 		Sessions:   sessions,
 		Users:      st,
+		Limiter:    auth.NewRateLimiter(5, 60*time.Second),
 		CookieName: cfg.Session.CookieName,
 	}).RegisterRoutes(apiMux)
 

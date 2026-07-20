@@ -85,7 +85,7 @@
 - [x] `internal/auth`: WebAuthn 認証セレモニー
       （`/api/auth/login/begin` / `finish`）
 - [x] `GET /api/auth/me` / `POST /api/auth/logout`
-- [ ] レート制限（連続 5 回失敗で 60 秒ロック）
+- [x] レート制限（連続 5 回失敗で 60 秒ロック）
 - [ ] パスワードブートストラップ（Redmine `/my/account.json` に Basic 認証、
       不存在ユーザーにも同等処理時間、パスワードは保存しない。Design.md §3.3）
 - [ ] 登録コードによる端末追加（6 桁、10 分、1 回限り。Design.md §3.4）
