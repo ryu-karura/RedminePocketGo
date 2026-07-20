@@ -145,7 +145,7 @@
 - [x] `js/common/auth.js`（base64url 変換、`navigator.credentials`、機能判定）
 - [x] `js/common/modal.js` / `js/common/utils.js`
 - [x] `js/common/tree.js`（純粋関数。`node --test` で単体テスト）
-- [ ] Tabulator 6 を `js/vendor/` に同梱（ライセンス込み）+
+- [x] Tabulator 6 を `js/vendor/` に同梱（ライセンス込み）+
       `js/common/table.js` ラッパー（dataTree 対応）
 - [x] `login` 画面（パスキー主導線、登録コード、ブートストラップ。
       4 状態と失敗のインライン表示。Design.md §7.5）
