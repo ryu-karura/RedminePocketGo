@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   assigneeLabel, countClosed, filterOpen, issueBadges, matchIssue, pruneIssues,
+  issuePatch,
 } from '../common/issuefmt.js';
 
 const statuses = [
@@ -59,6 +60,34 @@ test('issueBadges classifies status and priority and resolves assignee', () => {
   assert.equal(b.status.label, '進行中');
   assert.equal(b.priority.kind, 'urgent'); // 最上位 = urgent
   assert.equal(b.assignee, '山田');
+});
+
+test('issuePatch sends only changed fields, or null when nothing changed', () => {
+  const orig = {
+    status: { id: 2 }, priority: { id: 6 }, done_ratio: 60, assigned_to: { id: 7 },
+  };
+  // 何も変えない → null
+  assert.equal(issuePatch(orig, {
+    statusId: 2, priorityId: 6, doneRatio: 60, assignedToId: 7,
+  }), null);
+  // 状態だけ変更
+  assert.deepEqual(issuePatch(orig, { statusId: 5 }), { issue: { status_id: 5 } });
+  // 進捗だけ変更（型が違っても数値比較）
+  assert.deepEqual(issuePatch(orig, { doneRatio: '80' }), { issue: { done_ratio: 80 } });
+  // コメントは空でなければ常に含める（変更なしでも）
+  assert.deepEqual(issuePatch(orig, { notes: '追記' }), { issue: { notes: '追記' } });
+  assert.equal(issuePatch(orig, { notes: '   ' }), null);
+  // 複数フィールド
+  assert.deepEqual(
+    issuePatch(orig, { statusId: 5, notes: '完了しました' }),
+    { issue: { status_id: 5, notes: '完了しました' } },
+  );
+});
+
+test('issuePatch handles an originally-unassigned issue', () => {
+  const orig = { status: { id: 1 }, priority: { id: 4 }, done_ratio: 0 };
+  assert.deepEqual(issuePatch(orig, { assignedToId: 9 }), { issue: { assigned_to_id: 9 } });
+  assert.equal(issuePatch(orig, { doneRatio: 0 }), null);
 });
 
 test('matchIssue applies status/priority/assignee filters, ignoring empties', () => {

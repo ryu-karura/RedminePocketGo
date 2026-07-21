@@ -33,6 +33,16 @@ export function dueDateSeverity(due, now = new Date()) {
   return 'ok';
 }
 
+// dueRemainingLabel は期日までの残り日数を利用者向け日本語で返す
+//（Design.md §7.8。超過は「N日超過」、当日は「本日」、未指定は空）。
+export function dueRemainingLabel(due, now = new Date()) {
+  const n = daysUntil(due, now);
+  if (n === null) return '';
+  if (n < 0) return `${-n}日超過`;
+  if (n === 0) return '本日';
+  return `残${n}日`;
+}
+
 // statusKind は Redmine ステータスを new / open / closed に分類する
 //（Design.md §7.4。固定表は持たず is_closed と並び順から決める）。
 export function statusKind(status, allStatuses) {

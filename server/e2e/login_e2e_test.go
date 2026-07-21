@@ -10,11 +10,14 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,7 +33,45 @@ import (
 // 経路の取り違えを検知する。
 func fakeRedmine(t *testing.T) *httptest.Server {
 	t.Helper()
+	// チケット 101 の状態はインライン編集で書き換わる（PUT を保持し GET に反映）。
+	var mu sync.Mutex
+	statusID, statusName := 2, "進行中"
+	names := map[int]string{1: "新規", 2: "進行中", 5: "完了"}
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 個別チケット（詳細取得 / インライン更新）。/issues/{id}.json。
+		if strings.HasPrefix(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, ".json") {
+			if r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			if r.Method == http.MethodPut {
+				var body struct {
+					Issue struct {
+						StatusID int `json:"status_id"`
+					} `json:"issue"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				if body.Issue.StatusID != 0 {
+					mu.Lock()
+					statusID = body.Issue.StatusID
+					statusName = names[body.Issue.StatusID]
+					mu.Unlock()
+				}
+				w.WriteHeader(http.StatusOK) // Redmine は 204 だが 2xx を透過
+				return
+			}
+			mu.Lock()
+			sid, sname := statusID, statusName
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"issue":{"id":101,"subject":"帳票出力の刷新","description":"帳票まわりの刷新対応",`+
+				`"status":{"id":%d,"name":%q},"priority":{"id":6,"name":"高"},"tracker":{"id":1,"name":"バグ"},`+
+				`"assigned_to":{"id":7,"name":"山田"},"due_date":"2026-08-15","done_ratio":60,`+
+				`"journals":[{"id":1,"notes":"初回の記録","user":{"id":7,"name":"山田"},"created_on":"2026-07-01T10:00:00Z"}],`+
+				`"attachments":[]}}`, sid, sname)
+			return
+		}
 		switch r.URL.Path {
 		case "/my/account.json":
 			user, pass, ok := r.BasicAuth()
@@ -284,6 +325,30 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("issues screen flow: %v", err)
+	}
+
+	// チケット詳細: 詳細が描画され、状態のインライン編集が PUT され再取得に反映
+	// される（変更項目のみ送信 → fake が保持 → バッジが更新）。
+	err = chromedp.Run(ctx,
+		chromedp.Navigate(base+"/#issue-detail/101"),
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active .issue-detail');if(!t)return false;`+
+				`var s=t.innerText;return s.indexOf('帳票出力の刷新')>=0 && s.indexOf('初回の記録')>=0 `+
+				`&& s.indexOf('進行中')>=0;})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("08-issue-detail.png"),
+		// 状態を「完了」(id=5) に変更 → PUT → 再取得でバッジが「完了」になる。
+		chromedp.Evaluate(
+			`(function(){var s=document.querySelector('.screen.active #editStatus');`+
+				`s.value='5';s.dispatchEvent(new Event('change'));})()`, nil),
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active .issue-detail .badge.status-closed');`+
+				`return !!t && t.innerText.indexOf('完了')>=0;})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("09-issue-detail-edited.png"),
+	)
+	if err != nil {
+		t.Fatalf("issue detail flow: %v", err)
 	}
 }
 

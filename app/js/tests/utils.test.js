@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   daysUntil, dueDateSeverity, statusKind, priorityKind,
-  escapeHtml, formatDateTime, errorMessage,
+  escapeHtml, formatDateTime, errorMessage, dueRemainingLabel,
 } from '../common/utils.js';
 
 const at = (s) => new Date(s);
@@ -14,6 +14,15 @@ test('daysUntil counts whole days to a due date', () => {
   assert.equal(daysUntil('2026-07-18', now), -2);
   assert.equal(daysUntil('', now), null);
   assert.equal(daysUntil(null, now), null);
+});
+
+test('dueRemainingLabel: 残N日 / 本日 / N日超過 / 空', () => {
+  const now = at('2026-07-20T09:00:00+09:00');
+  assert.equal(dueRemainingLabel('2026-07-25', now), '残5日');
+  assert.equal(dueRemainingLabel('2026-07-20', now), '本日');
+  assert.equal(dueRemainingLabel('2026-07-18', now), '2日超過');
+  assert.equal(dueRemainingLabel('', now), '');
+  assert.equal(dueRemainingLabel(null, now), '');
 });
 
 test('dueDateSeverity: ok >7, warn within 7, crit overdue', () => {

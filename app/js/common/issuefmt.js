@@ -54,6 +54,32 @@ export function issueBadges(issue, meta) {
   };
 }
 
+// issuePatch は元のチケットと編集値から、Redmine 更新用の最小ボディ
+// `{ issue: {...変更項目のみ...} }` を作る（Design.md §7.8「変更した項目だけを
+// 送信」）。変更がなければ null。notes は空でなければ常に含める（コメント追加）。
+export function issuePatch(original, changes) {
+  const o = original || {};
+  const issue = {};
+  const differs = (v, cur) => v != null && String(v) !== String(cur == null ? '' : cur);
+
+  if (differs(changes.statusId, o.status && o.status.id)) {
+    issue.status_id = Number(changes.statusId);
+  }
+  if (differs(changes.priorityId, o.priority && o.priority.id)) {
+    issue.priority_id = Number(changes.priorityId);
+  }
+  if (changes.doneRatio != null && Number(changes.doneRatio) !== Number(o.done_ratio || 0)) {
+    issue.done_ratio = Number(changes.doneRatio);
+  }
+  if (differs(changes.assignedToId, o.assigned_to && o.assigned_to.id)) {
+    issue.assigned_to_id = Number(changes.assignedToId);
+  }
+  if (changes.notes != null && String(changes.notes).trim() !== '') {
+    issue.notes = String(changes.notes);
+  }
+  return Object.keys(issue).length ? { issue } : null;
+}
+
 // matchIssue は絞り込み条件（状態種別・優先度種別・担当者 id）に対する述語。
 // 空（null/undefined/''）の条件は無視する。status は 'open'|'closed'|null。
 export function matchIssue(issue, meta, { status, priorityId, assigneeId } = {}) {
