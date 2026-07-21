@@ -58,8 +58,17 @@ export async function initProjects(section) {
           title: '名前', field: 'name', headerSort: false,
           formatter: (cell) => escapeHtml(cell.getValue()),
         },
+        {
+          // 未完了チケット数（Design.md §7.6）。未取得は空欄。
+          title: '未完了', field: 'openIssues', headerSort: false,
+          hozAlign: 'right', width: 72, cssClass: 'col-open-count',
+          formatter: (cell) => {
+            const v = cell.getValue();
+            return v == null ? '' : String(v);
+          },
+        },
       ],
-      tabulator: { index: 'id' },
+      tabulator: { index: 'id', layout: 'fitColumns' },
     });
     table.on('tableBuilt', () => applyExpansion(table, expand));
     table.on('rowClick', (e, row) => {

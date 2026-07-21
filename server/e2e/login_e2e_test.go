@@ -53,6 +53,16 @@ func fakeRedmine(t *testing.T) *httptest.Server {
 				`{"id":3,"name":"在庫モジュール","identifier":"zaiko","parent":{"id":1}},`+
 				`{"id":4,"name":"社内インフラ","identifier":"infra"}`+
 				`],"total_count":4,"offset":0,"limit":100}`)
+		case "/issues.json":
+			// プロジェクト別 未完了件数（CountOpenIssues。project_id で件数を返す）。
+			if r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			counts := map[string]int{"1": 12, "2": 5, "3": 3, "4": 8}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"issues":[],"total_count":%d,"offset":0,"limit":1}`,
+				counts[r.URL.Query().Get("project_id")])
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -200,11 +210,13 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 	// を確認する（populated → 検索で filtered、子が見える＝祖先が自動展開）。
 	err = chromedp.Run(ctx,
 		chromedp.Navigate(base+"/#projects"),
-		// populated: ルートのプロジェクト名が出るまで待つ（アクティブ画面に限定）。
+		// populated: ルートのプロジェクト名と未完了件数が出るまで待つ
+		//（基幹システム=12 / 社内インフラ=8。アクティブ画面に限定）。
 		chromedp.Poll(
 			`(function(){var t=document.querySelector('.screen.active #projectsTree');`+
-				`return !!t && t.innerText.indexOf('基幹システム')>=0 `+
-				`&& t.innerText.indexOf('社内インフラ')>=0;})()`,
+				`if(!t)return false;var s=t.innerText;`+
+				`return s.indexOf('基幹システム')>=0 && s.indexOf('社内インフラ')>=0 `+
+				`&& s.indexOf('12')>=0 && s.indexOf('8')>=0;})()`,
 			nil, chromedp.WithPollingTimeout(20*time.Second)),
 		shot("04-projects.png"),
 		// 検索で「会計」に絞り込む: 子の会計モジュールが見え（祖先が自動展開）、

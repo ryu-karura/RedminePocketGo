@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
-
 )
 
 func newTestClient(upstreamURL string, pageSize int) *Client {
@@ -40,6 +40,40 @@ func TestClientInjectsKeyAndJoinsSubURI(t *testing.T) {
 	}
 	if gotKey != "key-1" {
 		t.Errorf("api key = %q; want key-1", gotKey)
+	}
+}
+
+func TestClientCountOpenIssues(t *testing.T) {
+	var gotPath string
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.Query()
+		// 件数だけ必要。issues 本体は空でも total_count を返す。
+		fmt.Fprint(w, `{"issues":[],"total_count":7,"offset":0,"limit":1}`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv.URL, 100)
+	n, err := c.CountOpenIssues(context.Background(), "k", 42)
+	if err != nil {
+		t.Fatalf("CountOpenIssues: %v", err)
+	}
+	if n != 7 {
+		t.Errorf("count = %d; want 7 (total_count)", n)
+	}
+	if gotPath != "/redmine/issues.json" {
+		t.Errorf("path = %q; want /redmine/issues.json", gotPath)
+	}
+	for _, kv := range []struct{ k, want string }{
+		{"project_id", "42"},
+		{"status_id", "open"},
+		{"subproject_id", "!*"}, // サブプロジェクトを除く直下の件数
+		{"limit", "1"},          // 本体は要らないので最小
+	} {
+		if got := gotQuery.Get(kv.k); got != kv.want {
+			t.Errorf("query %s = %q; want %q", kv.k, got, kv.want)
+		}
 	}
 }
 

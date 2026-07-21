@@ -20,6 +20,7 @@ type Aggregator interface {
 	ListProjects(ctx context.Context, apiKey string) ([]redmine.Project, error)
 	ListProjectIssues(ctx context.Context, apiKey string, projectID int) ([]redmine.Issue, error)
 	GetIssue(ctx context.Context, apiKey string, id int) (*redmine.Issue, error)
+	CountOpenIssues(ctx context.Context, apiKey string, projectID int) (int, error)
 	ListTrackers(ctx context.Context, apiKey string) ([]redmine.Ref, error)
 	ListStatuses(ctx context.Context, apiKey string) ([]redmine.Status, error)
 	ListPriorities(ctx context.Context, apiKey string) ([]redmine.Ref, error)
@@ -105,13 +106,72 @@ func (h *AggregateHandler) projectsTree(w http.ResponseWriter, r *http.Request) 
 		if err != nil {
 			return nil, err
 		}
-		return redmine.BuildProjectTree(projects), nil
+		tree := redmine.BuildProjectTree(projects)
+		if err := h.enrichOpenCounts(r.Context(), userID, apiKey, tree); err != nil {
+			return nil, err
+		}
+		return tree, nil
 	})
 	if err != nil {
 		h.writeUpstream(w, r, userID, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"projects": v})
+}
+
+// enrichOpenCounts は各プロジェクトノードに未完了チケット数を後付けする
+//（Design.md §7.6）。件数は付随情報なので、上流 401（要再連携）だけを伝播し、
+// 一時障害などその他のエラーは当該ノードの件数を欠測（nil）にしてツリー描画は
+// 続行する。取得はキー単位で並行化するが、実際の上流並行数は Redmine
+// クライアント側のセマフォで抑えられる。
+func (h *AggregateHandler) enrichOpenCounts(ctx context.Context, userID, apiKey string, tree []*redmine.ProjectNode) error {
+	nodes := flattenProjectNodes(tree)
+	if len(nodes) == 0 {
+		return nil
+	}
+	const maxParallel = 8
+	sem := make(chan struct{}, maxParallel)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var authErr error
+
+	for _, nd := range nodes {
+		wg.Add(1)
+		go func(nd *redmine.ProjectNode) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			n, err := h.Redmine.CountOpenIssues(ctx, apiKey, nd.ID)
+			if err != nil {
+				if errors.Is(err, redmine.ErrUnauthorized) {
+					mu.Lock()
+					authErr = err
+					mu.Unlock()
+				} else {
+					h.logErr("open issue count failed", userID, err)
+				}
+				return
+			}
+			cnt := n
+			nd.OpenIssues = &cnt // 各 goroutine は別ノードだけを書く
+		}(nd)
+	}
+	wg.Wait()
+	return authErr
+}
+
+// flattenProjectNodes はツリーを先行順の *ProjectNode 平坦列にする。
+func flattenProjectNodes(tree []*redmine.ProjectNode) []*redmine.ProjectNode {
+	var out []*redmine.ProjectNode
+	var walk func(ns []*redmine.ProjectNode)
+	walk = func(ns []*redmine.ProjectNode) {
+		for _, n := range ns {
+			out = append(out, n)
+			walk(n.Children)
+		}
+	}
+	walk(tree)
+	return out
 }
 
 func (h *AggregateHandler) issuesTree(w http.ResponseWriter, r *http.Request) {

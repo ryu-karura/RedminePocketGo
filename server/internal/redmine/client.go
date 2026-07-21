@@ -252,6 +252,25 @@ func (c *Client) ListProjectIssues(ctx context.Context, apiKey string, projectID
 	return out, nil
 }
 
+// CountOpenIssues はプロジェクト直下（サブプロジェクトを除く）の未完了チケット
+// 数を返す。件数だけが必要なので limit=1 として total_count のみを読む
+//（Design.md §7.6 のプロジェクト一覧右端の数字）。
+func (c *Client) CountOpenIssues(ctx context.Context, apiKey string, projectID int) (int, error) {
+	var page struct {
+		TotalCount int `json:"total_count"`
+	}
+	q := url.Values{
+		"project_id":    {strconv.Itoa(projectID)},
+		"status_id":     {"open"},
+		"subproject_id": {"!*"}, // 各ノードの数字を独立させる（子の件数を重複計上しない）
+		"limit":         {"1"},
+	}
+	if err := c.get(ctx, apiKey, "/issues.json", q, &page); err != nil {
+		return 0, err
+	}
+	return page.TotalCount, nil
+}
+
 // GetIssue はチケット本体を履歴・添付込みで取得する。
 func (c *Client) GetIssue(ctx context.Context, apiKey string, id int) (*Issue, error) {
 	var wrap struct {

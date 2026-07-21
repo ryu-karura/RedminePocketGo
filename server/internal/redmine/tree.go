@@ -8,9 +8,12 @@ import "sort"
 // 親が見えない）はルート扱い。循環参照（データ破損）でもノードを失わない。
 
 // ProjectNode はプロジェクトツリーの 1 ノード。
+// OpenIssues は未完了チケット数（Design.md §7.6）。集約ハンドラが後付けする
+// ため、未取得（集計失敗など）のときは nil で JSON から省かれる。
 type ProjectNode struct {
 	Project
-	Children []*ProjectNode `json:"children,omitempty"`
+	OpenIssues *int           `json:"openIssues,omitempty"`
+	Children   []*ProjectNode `json:"children,omitempty"`
 }
 
 // IssueNode はチケットツリーの 1 ノード。

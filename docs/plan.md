@@ -164,7 +164,7 @@
 
 - [x] `projects` 画面（dataTree、開閉状態の localStorage 保存、
       検索時の祖先自動展開、行タップで issues へ。Design.md §7.6）
-- [ ] プロジェクト別 未完了チケット数（サーバー: `/api/projects/tree` の各
+- [x] プロジェクト別 未完了チケット数（サーバー: `/api/projects/tree` の各
       ノードに `openIssues` を付与、画面: 右端に表示。Design.md §7.6）
 - [ ] `issues` 画面（dataTree、2 段組行、フィルタ行、完了は折りたたみ、
       追加読み込み、作成ボタン。Design.md §7.7）
@@ -225,6 +225,7 @@
 | 2026-07-20 10:07 | 3 | 5/5 | 4535d72〜b836589（タスク 5 + レビュー修正 1） | フェーズ 3 完了。完了条件（test-api 緑=許可リスト外 404 / ヘッダー拒否・除去 / 401→409 変換、上流は httptest.Server）を検証済み。品質ゲート: code-review（medium、ファインダー 2 + 検証）実施、CONFIRMED 7 件修正（**§9-1 重大**: /my/account.json を中継許可リストから除外＝api_key 漏洩防止／リレーを httputil.ReverseProxy 化＝リダイレクト非追従で API キー再送防止・gzip/応答ヘッダ/chunked/パスエスケープの各バグ解消／APIKey を値レシーバ化で redaction 迂回防止／subURI 検証／readKEK 厳格化／SetRedmineCredentialStatus の空振り検知）。見送り: KEK ローテ後の復号失敗が status=active のまま 500 継続（keyVersion による運用対応、将来）／前段プロキシ由来の上流 401 を credential-invalid 扱い（Design.md §4.4 の仕様どおり） |
 | 2026-07-21 04:07 | 5 | 12/12 | フェーズ 5 レビュー修正コミット | フェーズ 5 完了。完了条件（`node --test app/js/tests/*.test.js` 緑=17 件、`make test-e2e` 緑=ブートストラップ登録→パスキーログイン→/api/auth/me 成功を CDP 仮想認証器で自動検証）を検証済み。品質ゲート: code-review（medium、ファインダー 2 + 検証）実施、CONFIRMED 8 件修正（utils.jstMidnight の実行機 TZ 依存で 1 日ずれるバグ／app.js の hashchange・rmappLogout の再ログイン時多重登録＋ログアウト後もルーティングされる不具合／login.js のパスキー非対応時に登録コード・ブートストラップ導線が create を呼ぶのに誤誘導／modal.js のフォーカストラップ未実装＋初期フォーカスが disabled/非表示要素を掴む／e2e fakeRedmine がパス無検証／`--scrim` トークン化で layout.css の色リテラル 2 箇所除去／`login-overlay`→`loginOverlay` の camelCase 統一／initScreen の catch が実装済み画面の実行時エラーも握りつぶす）。TZ 非依存は Honolulu / Tokyo 両 TZ でテスト実行して確認 |
 | 2026-07-20 16:07 | 4 | 5/5 | cb971ff〜418707b（タスク 5 + レビュー修正 1） | フェーズ 4 完了。完了条件（test-unit / test-api 緑、Redmine クライアントは httptest.Server のみ、ツリー化は純粋関数の単体テスト）を検証済み。品質ゲート: code-review（medium、ファインダー 2 + 検証）実施、CONFIRMED 7 件修正（ttlCache を per-key ロック化＝1 ユーザーの遅い上流が全体を止めない／ページング重複の解消＝offset は pageSize で進める／集約 401 も MarkInvalid して proxy と挙動統一／resolve のエラー分類＝未連携は 409・一時障害は 500＋slog 記録／バックオフ overflow の上限／context キャンセルの 502 誤分類回避／兄弟ソートの安定化+ID タイブレーク）。見送り（correctness 影響なしの整理）: ttlCache の map エビクション／meta の並列取得／バックオフ中のセマフォ占有／循環復旧の O(n²)／サブ URI 結合・ヘッダー名定数・ツリービルダの三重複 |
+| 2026-07-21 16:07 | 6 | 2/6（進行中） | openIssues 集約（client/aggregate）+ projects 件数列 + E2E | プロジェクト別 未完了チケット数を実装。redmine.Client.CountOpenIssues（`/issues.json?project_id&status_id=open&subproject_id=!*&limit=1` の total_count）をテストファーストで追加、集約ハンドラが projects/tree の各ノードに `openIssues` を後付け（キー単位で並行取得、上流 401 のみ伝播しその他障害は件数欠測でツリー描画継続）。ProjectNode に `*int openIssues,omitempty`。画面は右端に件数列を追加。E2E の擬似上流に `/issues.json` を追加し件数（基幹=12/社内=8）の描画を実機検証。全スイート緑（node 20 / unit / api / build / e2e）。フェーズ 6 継続（issues / issue-detail / モーダル / settings / 4 状態・a11y が残り）。失敗なし |
 | 2026-07-21 10:07 | 6 | 1/6（進行中） | projects 画面 + tree.expandedIdsFor + E2E + app.js 競合修正 | フェーズ 6 に着手。`projects` 画面を実装（dataTree 描画・開閉状態の localStorage 保存・検索時の祖先自動展開・行タップで issues へ・4 状態）。純粋関数 `expandedIdsFor` を追加し単体テスト（node 20 件緑）。E2E を拡張し、集約 API からのツリー描画と検索絞り込みを実機検証（make test-e2e 緑）。E2E で app.js の画面フラグメント二重生成バグ（`loadFragment` の未解決キャッシュ競合）を発見し修正、LESSONS #3・#4 追記。「未完了件数」はサーバー集約が必要なため独立タスクへ分離。フェーズ 6 は継続（issues / issue-detail / モーダル / settings / 4 状態・a11y が残り）。失敗なし |
 
 ## 変更履歴

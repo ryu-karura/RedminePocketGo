@@ -19,8 +19,16 @@ type fakeAggregator struct {
 	trackers   []redmine.Ref
 	statuses   []redmine.Status
 	priorities []redmine.Ref
+	openCounts map[int]int // projectID -> 未完了件数
 	err        error
 	calls      atomic.Int32
+}
+
+func (f *fakeAggregator) CountOpenIssues(_ context.Context, _ string, projectID int) (int, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.openCounts[projectID], nil
 }
 
 func (f *fakeAggregator) ListProjects(context.Context, string) ([]redmine.Project, error) {
@@ -90,6 +98,26 @@ func TestProjectsTree(t *testing.T) {
 			t.Errorf("body lacks nested tree: %s", rec.Body)
 		}
 	})
+}
+
+func TestProjectsTreeIncludesOpenCounts(t *testing.T) {
+	agg := &fakeAggregator{
+		projects: []redmine.Project{
+			{ID: 1, Name: "root"},
+			{ID: 2, Name: "child", Parent: &redmine.Ref{ID: 1}},
+		},
+		openCounts: map[int]int{1: 12, 2: 5},
+	}
+	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d (%s)", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"openIssues":12`) || !strings.Contains(body, `"openIssues":5`) {
+		t.Errorf("body lacks per-project open counts: %s", body)
+	}
 }
 
 func TestProjectsTreeCachedPerUser(t *testing.T) {
