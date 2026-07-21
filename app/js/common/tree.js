@@ -50,6 +50,17 @@ export function filterTree(nodes, pred, childrenKey = CHILDREN) {
   return walk(nodes);
 }
 
+// expandedIdsFor は「いま展開すべきノード id 集合」を返す純粋関数。
+// 検索していないとき（query 空）は保存済みの開閉状態をそのまま使う。
+// 検索中は該当ノードの祖先（searchAncestors）を保存済み状態に上乗せして
+// 自動展開する（Design.md §7.6）。入力の Set は変更しない。
+export function expandedIdsFor(query, persisted, searchAncestors) {
+  const base = new Set(persisted || []);
+  if (!query) return base;
+  for (const id of searchAncestors || []) base.add(id);
+  return base;
+}
+
 // collectMatchAncestors は述語にマッチするノードの祖先 id 集合を返す
 //（検索時に自動展開すべきノード）。マッチ自身は含めない。
 export function collectMatchAncestors(nodes, pred, childrenKey = CHILDREN) {

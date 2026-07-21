@@ -23,23 +23,39 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// fakeRedmine は /my/account.json だけを返す上流（ブートストラップ用）。
+// fakeRedmine は E2E に必要な上流エンドポイントだけを返す:
+//   - /my/account.json … ブートストラップ（BasicAuth → api_key を返す）
+//   - /projects.json    … 集約 API（X-Redmine-Api-Key 検証、親子ツリー）
+// subURI="" のため、上流パスにサブ URI は付かない。未対応パスは 404 にして
+// 経路の取り違えを検知する。
 func fakeRedmine(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// subURI="" のため、ブートストラップは /my/account.json を叩く。
-		// それ以外のパスは 404 にして経路の取り違えを検知する。
-		if r.URL.Path != "/my/account.json" {
+		switch r.URL.Path {
+		case "/my/account.json":
+			user, pass, ok := r.BasicAuth()
+			if !ok || user != "alice" || pass != "secret" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"user":{"login":"alice","firstname":"Alice","lastname":"Doe","api_key":"e2e-key"}}`)
+		case "/projects.json":
+			if r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			// 会計・在庫は 基幹システム の子。社内インフラ はルート。
+			fmt.Fprint(w, `{"projects":[`+
+				`{"id":1,"name":"基幹システム","identifier":"kikan"},`+
+				`{"id":2,"name":"会計モジュール","identifier":"kaikei","parent":{"id":1}},`+
+				`{"id":3,"name":"在庫モジュール","identifier":"zaiko","parent":{"id":1}},`+
+				`{"id":4,"name":"社内インフラ","identifier":"infra"}`+
+				`],"total_count":4,"offset":0,"limit":100}`)
+		default:
 			w.WriteHeader(http.StatusNotFound)
-			return
 		}
-		user, pass, ok := r.BasicAuth()
-		if !ok || user != "alice" || pass != "secret" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"user":{"login":"alice","firstname":"Alice","lastname":"Doe","api_key":"e2e-key"}}`)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -178,6 +194,31 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("passkey login flow: %v", err)
+	}
+
+	// プロジェクト一覧が集約 API から dataTree で描画され、検索で絞り込めること
+	// を確認する（populated → 検索で filtered、子が見える＝祖先が自動展開）。
+	err = chromedp.Run(ctx,
+		chromedp.Navigate(base+"/#projects"),
+		// populated: ルートのプロジェクト名が出るまで待つ（アクティブ画面に限定）。
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active #projectsTree');`+
+				`return !!t && t.innerText.indexOf('基幹システム')>=0 `+
+				`&& t.innerText.indexOf('社内インフラ')>=0;})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("04-projects.png"),
+		// 検索で「会計」に絞り込む: 子の会計モジュールが見え（祖先が自動展開）、
+		// 一致しない社内インフラは消える。
+		chromedp.SendKeys(`.screen.active #projectSearch`, "会計", chromedp.ByQuery),
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active #projectsTree');if(!t)return false;`+
+				`var s=t.innerText;return s.indexOf('会計モジュール')>=0 `+
+				`&& s.indexOf('社内インフラ')<0;})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("05-projects-search.png"),
+	)
+	if err != nil {
+		t.Fatalf("projects screen flow: %v", err)
 	}
 }
 

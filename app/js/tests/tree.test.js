@@ -1,7 +1,9 @@
 // tree.js の単体テスト（node --test 標準ランナーのみ。npm 依存なし）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toDataTree, filterTree, collectMatchAncestors, flatten } from '../common/tree.js';
+import {
+  toDataTree, filterTree, collectMatchAncestors, flatten, expandedIdsFor,
+} from '../common/tree.js';
 
 const sample = () => [
   { id: 1, name: '基幹', children: [
@@ -56,4 +58,22 @@ test('filterTree returns empty when nothing matches', () => {
 test('collectMatchAncestors returns ancestor ids of matches for auto-expand', () => {
   const ids = collectMatchAncestors(sample(), (n) => n.name === '帳票');
   assert.deepEqual([...ids].sort((a, b) => a - b), [1, 2]);
+});
+
+test('expandedIdsFor without a query returns the persisted set (independent copy)', () => {
+  const persisted = new Set([1, 5]);
+  const out = expandedIdsFor('', persisted, new Set([2]));
+  assert.deepEqual([...out].sort((a, b) => a - b), [1, 5]);
+  out.add(99);
+  assert.ok(!persisted.has(99), 'input set is not mutated');
+});
+
+test('expandedIdsFor with a query unions persisted state and search ancestors', () => {
+  const out = expandedIdsFor('帳票', new Set([5]), new Set([1, 2]));
+  assert.deepEqual([...out].sort((a, b) => a - b), [1, 2, 5]);
+});
+
+test('expandedIdsFor accepts array inputs for persisted state', () => {
+  const out = expandedIdsFor('x', [3], [4]);
+  assert.deepEqual([...out].sort((a, b) => a - b), [3, 4]);
 });

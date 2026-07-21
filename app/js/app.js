@@ -16,24 +16,30 @@ export const SCREENS = [
   { key: 'settings', label: '設定' },
 ];
 
-const screenCache = new Map(); // key -> section element
+const screenCache = new Map(); // key -> Promise<section element>
 
 // loadFragment は screens/<key>.html を取得して画面領域に挿入する。
-async function loadFragment(key) {
+// 取得は非同期なので「解決済み要素」ではなく Promise をキャッシュする。
+// これにより route が並行して 2 回呼ばれても、フラグメントは 1 枚しか作られない
+//（未解決の間に両者が has()=false を見て二重生成する競合を防ぐ）。
+function loadFragment(key) {
   if (screenCache.has(key)) return screenCache.get(key);
-  const host = document.getElementById('screens');
-  const section = document.createElement('section');
-  section.className = 'screen';
-  section.dataset.screen = key;
-  try {
-    const res = await fetch(`screens/${key}.html`);
-    section.innerHTML = res.ok ? await res.text() : '';
-  } catch {
-    section.innerHTML = '';
-  }
-  host.appendChild(section);
-  screenCache.set(key, section);
-  return section;
+  const p = (async () => {
+    const host = document.getElementById('screens');
+    const section = document.createElement('section');
+    section.className = 'screen';
+    section.dataset.screen = key;
+    try {
+      const res = await fetch(`screens/${key}.html`);
+      section.innerHTML = res.ok ? await res.text() : '';
+    } catch {
+      section.innerHTML = '';
+    }
+    host.appendChild(section);
+    return section;
+  })();
+  screenCache.set(key, p);
+  return p;
 }
 
 // initScreen は js/screens/<key>.js の init を呼ぶ。未実装ならプレースホルダ。
@@ -124,8 +130,11 @@ function enterApp() {
     window.rmappLogout = doLogout;
     wired = true;
   }
+  // hash を設定すると hashchange リスナーが route を呼ぶ。二重呼び出し
+  //（＝画面フラグメントの二重生成）を避けるため、設定した場合は直接 route
+  // せずリスナーに任せる。既に hash があるなら自分で route する。
   if (!location.hash) location.hash = '#projects';
-  route();
+  else route();
 }
 
 // doLogout はセッションを破棄し、ハッシュを消してログイン画面に戻す。
