@@ -85,6 +85,12 @@
 .badge.status-open { background: var(--status-open-soft); color: var(--status-open); }
 .badge.status-closed { background: var(--status-closed-soft); color: var(--status-closed); }
 
+/* 優先度バッジ（色分けは必ずラベルと併記＝色単独で意味を持たせない） */
+.badge.prio-urgent { background: var(--crit-soft); color: var(--crit); }
+.badge.prio-high { background: var(--warn-soft); color: var(--warn); }
+.badge.prio-normal { background: var(--surface-2); color: var(--muted); }
+.badge.prio-low { background: var(--surface-2); color: var(--muted); }
+
 .divider {
   display: flex;
   align-items: center;

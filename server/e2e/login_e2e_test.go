@@ -54,15 +54,43 @@ func fakeRedmine(t *testing.T) *httptest.Server {
 				`{"id":4,"name":"社内インフラ","identifier":"infra"}`+
 				`],"total_count":4,"offset":0,"limit":100}`)
 		case "/issues.json":
-			// プロジェクト別 未完了件数（CountOpenIssues。project_id で件数を返す）。
 			if r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			counts := map[string]int{"1": 12, "2": 5, "3": 3, "4": 8}
+			q := r.URL.Query()
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"issues":[],"total_count":%d,"offset":0,"limit":1}`,
-				counts[r.URL.Query().Get("project_id")])
+			// 件数クエリ（CountOpenIssues）: status_id=open & limit=1。
+			if q.Get("status_id") == "open" && q.Get("limit") == "1" {
+				counts := map[string]int{"1": 12, "2": 5, "3": 3, "4": 8}
+				fmt.Fprintf(w, `{"issues":[],"total_count":%d,"offset":0,"limit":1}`,
+					counts[q.Get("project_id")])
+				return
+			}
+			// ツリークエリ（status_id=*）: プロジェクト 1 のチケットを返す
+			//（親子 + 未完了/完了混在）。他プロジェクトは空。
+			if q.Get("project_id") == "1" {
+				fmt.Fprint(w, `{"issues":[`+
+					`{"id":101,"subject":"帳票出力の刷新","status":{"id":2,"name":"進行中"},"priority":{"id":6,"name":"高"},"assigned_to":{"id":7,"name":"山田"}},`+
+					`{"id":102,"subject":"PDF 出力","parent":{"id":101},"status":{"id":1,"name":"新規"},"priority":{"id":4,"name":"通常"}},`+
+					`{"id":103,"subject":"締め処理の高速化","status":{"id":5,"name":"完了"},"priority":{"id":4,"name":"通常"}}`+
+					`],"total_count":3,"offset":0,"limit":100}`)
+				return
+			}
+			fmt.Fprint(w, `{"issues":[],"total_count":0,"offset":0,"limit":100}`)
+		case "/trackers.json":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"trackers":[{"id":1,"name":"バグ"}]}`)
+		case "/issue_statuses.json":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"issue_statuses":[`+
+				`{"id":1,"name":"新規","is_closed":false},`+
+				`{"id":2,"name":"進行中","is_closed":false},`+
+				`{"id":5,"name":"完了","is_closed":true}]}`)
+		case "/enumerations/issue_priorities.json":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"issue_priorities":[`+
+				`{"id":3,"name":"低"},{"id":4,"name":"通常"},{"id":6,"name":"高"}]}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -231,6 +259,31 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("projects screen flow: %v", err)
+	}
+
+	// チケット一覧: 集約 API + メタからバッジ付き 2 段組で描画され、完了は既定で
+	// 畳まれ、状態フィルタで表示できることを確認する。
+	err = chromedp.Run(ctx,
+		chromedp.Navigate(base+"/#issues/1"),
+		// populated: 未完了チケットと状態バッジが出る。完了（締め処理）は非表示。
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active #issuesTree');if(!t)return false;`+
+				`var s=t.innerText;return s.indexOf('帳票出力の刷新')>=0 && s.indexOf('進行中')>=0 `+
+				`&& s.indexOf('締め処理')<0;})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("06-issues.png"),
+		// 状態フィルタを「すべて」にすると完了チケットも表示される。
+		chromedp.Evaluate(
+			`(function(){var s=document.querySelector('.screen.active #issueStatusFilter');`+
+				`s.value='';s.dispatchEvent(new Event('change'));})()`, nil),
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active #issuesTree');`+
+				`return !!t && t.innerText.indexOf('締め処理')>=0;})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("07-issues-all.png"),
+	)
+	if err != nil {
+		t.Fatalf("issues screen flow: %v", err)
 	}
 }
 
