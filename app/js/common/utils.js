@@ -14,10 +14,11 @@ export function daysUntil(due, now = new Date()) {
 }
 
 function jstMidnight(now) {
-  // now を JST の 0 時に丸めた epoch(ms)
-  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
-  const jst = utc + JST_OFFSET_MIN * 60000;
-  const d = new Date(jst);
+  // now を JST の 0 時に丸めた epoch(ms)。now.getTime() は絶対時刻（UTC）で
+  // 実行環境のタイムゾーンに依存しないので、そのまま +9h してから丸める。
+  // （getTimezoneOffset を足すと実行機のローカル TZ に依存し 1 日ずれる）。
+  const jstShifted = now.getTime() + JST_OFFSET_MIN * 60000;
+  const d = new Date(jstShifted);
   d.setUTCHours(0, 0, 0, 0);
   return d.getTime() - JST_OFFSET_MIN * 60000;
 }

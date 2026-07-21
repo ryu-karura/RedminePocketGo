@@ -37,19 +37,31 @@ async function loadFragment(key) {
 }
 
 // initScreen は js/screens/<key>.js の init を呼ぶ。未実装ならプレースホルダ。
+// import の失敗（モジュール未実装）と init 実行時のエラーを区別する。後者は
+// 握りつぶさず、画面にエラー状態を出して通知する（実装済み画面の不具合を隠さない）。
 async function initScreen(key, section, params) {
+  let mod;
   try {
-    const mod = await import(`./screens/${key}.js`);
-    const initFn = mod[`init${toCamel(key)}`] || mod.init;
-    if (typeof initFn === 'function') {
-      await initFn(section, params);
-      return;
-    }
+    mod = await import(`./screens/${key}.js`);
   } catch (e) {
-    // モジュール未実装（フェーズ 6 で追加）
+    // モジュール未実装（フェーズ 6 で追加）。プレースホルダを出す。
+    if (!section.innerHTML.trim()) {
+      section.innerHTML = '<div class="state-empty">この画面は準備中です。</div>';
+    }
+    return;
   }
-  if (!section.innerHTML.trim()) {
-    section.innerHTML = '<div class="state-empty">この画面は準備中です。</div>';
+  const initFn = mod[`init${toCamel(key)}`] || mod.init;
+  if (typeof initFn !== 'function') {
+    if (!section.innerHTML.trim()) {
+      section.innerHTML = '<div class="state-empty">この画面は準備中です。</div>';
+    }
+    return;
+  }
+  try {
+    await initFn(section, params);
+  } catch (e) {
+    section.innerHTML = '<div class="state-error">画面の初期化に失敗しました。</div>';
+    toast('画面の読み込みに失敗しました', 'crit');
   }
 }
 
@@ -58,6 +70,7 @@ function toCamel(key) {
 }
 
 async function route() {
+  if (!authed) return; // 未認証（ログインオーバーレイ表示中）はルーティングしない
   const raw = (location.hash || '#projects').slice(1);
   const [key, ...rest] = raw.split('/');
   const known = SCREENS.find((s) => s.key === key) || SCREENS[0];
@@ -92,24 +105,37 @@ async function bootstrap() {
   enterApp();
 }
 
+let authed = false; // 認証済みか（route のガード）
+let wired = false; // 一度だけ行う配線（多重登録防止）
+
 function presentLogin() {
   const node = document.createElement('div');
   showLogin(node);
-  initLogin(node, { onSuccess: () => { hideLogin(); enterApp(); } });
+  initLogin(node, { onSuccess: () => enterApp() });
 }
 
 function enterApp() {
+  authed = true;
   hideLogin();
-  initDrawer(SCREENS);
-  window.addEventListener('hashchange', route);
+  if (!wired) {
+    // ドロワー・hashchange・ログアウトの配線は一度だけ（再ログインで多重登録しない）
+    initDrawer(SCREENS);
+    window.addEventListener('hashchange', route);
+    window.rmappLogout = doLogout;
+    wired = true;
+  }
   if (!location.hash) location.hash = '#projects';
   route();
-  // ログアウトはグローバルに公開（設定画面から呼ぶ）
-  window.rmappLogout = async () => {
-    try { await apiPostJson('/api/auth/logout'); } catch (e) {}
-    location.hash = '';
-    presentLogin();
-  };
+}
+
+// doLogout はセッションを破棄し、ハッシュを消してログイン画面に戻す。
+// hash は history 経由で消して hashchange を発火させない（オーバーレイ下で
+// route が走らないように）。
+async function doLogout() {
+  try { await apiPostJson('/api/auth/logout'); } catch (e) {}
+  authed = false;
+  history.replaceState(null, '', location.pathname + location.search);
+  presentLogin();
 }
 
 document.addEventListener('DOMContentLoaded', bootstrap);

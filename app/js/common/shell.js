@@ -79,14 +79,14 @@ export function toast(message, kind = '') {
 // ---- ログインオーバーレイ ----
 
 export function showLogin(node) {
-  const overlay = document.getElementById('login-overlay');
+  const overlay = document.getElementById('loginOverlay');
   overlay.innerHTML = '';
   overlay.appendChild(node);
   overlay.classList.add('active');
 }
 
 export function hideLogin() {
-  const overlay = document.getElementById('login-overlay');
+  const overlay = document.getElementById('loginOverlay');
   overlay.classList.remove('active');
   overlay.innerHTML = '';
 }

@@ -27,6 +27,12 @@ import (
 func fakeRedmine(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// subURI="" のため、ブートストラップは /my/account.json を叩く。
+		// それ以外のパスは 404 にして経路の取り違えを検知する。
+		if r.URL.Path != "/my/account.json" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		user, pass, ok := r.BasicAuth()
 		if !ok || user != "alice" || pass != "secret" {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -184,7 +190,7 @@ func waitDrawerOrDump(t *testing.T, d time.Duration) chromedp.Action {
 		err := chromedp.WaitVisible(`.drawer__link`, chromedp.ByQuery).Do(wctx)
 		if err != nil {
 			var html string
-			_ = chromedp.OuterHTML(`#login-overlay`, &html, chromedp.ByID).Do(ctx)
+			_ = chromedp.OuterHTML(`#loginOverlay`, &html, chromedp.ByID).Do(ctx)
 			t.Logf("login overlay at timeout:\n%s", html)
 		}
 		return err

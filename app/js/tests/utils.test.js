@@ -66,3 +66,14 @@ test('errorMessage maps envelope codes to Japanese', () => {
   assert.match(errorMessage('rate_limited'), /しばらく|回数/);
   assert.equal(typeof errorMessage('unknown_code'), 'string');
 });
+
+test('daysUntil is timezone-independent (uses absolute time, not local TZ)', () => {
+  // JST 2026-07-20 20:00 == UTC 2026-07-20 11:00。期日 07-21 までは 1 日。
+  const now = new Date('2026-07-20T11:00:00Z');
+  assert.equal(daysUntil('2026-07-21', now), 1);
+  assert.equal(daysUntil('2026-07-20', now), 0);
+  // JST 深夜直前でも同様（UTC 15:00 = JST 翌 00:00）
+  const nowLate = new Date('2026-07-20T14:59:00Z'); // JST 23:59
+  assert.equal(daysUntil('2026-07-20', nowLate), 0);
+  assert.equal(daysUntil('2026-07-21', nowLate), 1);
+});

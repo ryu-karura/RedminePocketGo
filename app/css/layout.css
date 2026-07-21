@@ -49,7 +49,7 @@
 .drawer__backdrop {
   position: fixed;
   inset: 0;
-  background: rgb(0 0 0 / 40%);
+  background: var(--scrim);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease;
@@ -97,14 +97,14 @@ main#screens {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  background: rgb(0 0 0 / 45%);
+  background: var(--scrim);
   z-index: 50;
   padding: var(--space-3);
 }
 .modal-open { overflow: hidden; }
 
 /* ログインオーバーレイ（未認証時に全面表示） */
-#login-overlay {
+#loginOverlay {
   position: fixed;
   inset: 0;
   display: none;
@@ -114,7 +114,7 @@ main#screens {
   z-index: 60;
   padding: var(--space-4);
 }
-#login-overlay.active { display: flex; }
+#loginOverlay.active { display: flex; }
 
 @media (min-width: 900px) {
   .topbar__btn.menu { display: none; }

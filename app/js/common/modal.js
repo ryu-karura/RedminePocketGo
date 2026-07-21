@@ -13,9 +13,12 @@ export function openModal(container, { onClose } = {}) {
   overlay.className = 'modal-overlay';
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
+  if (!container.hasAttribute('tabindex')) container.setAttribute('tabindex', '-1');
   overlay.appendChild(container);
   document.body.appendChild(overlay);
   document.body.classList.add('modal-open');
+
+  const prevFocus = document.activeElement;
 
   const close = () => {
     if (activeClose !== close) return;
@@ -23,10 +26,31 @@ export function openModal(container, { onClose } = {}) {
     document.removeEventListener('keydown', onKey);
     overlay.remove();
     document.body.classList.remove('modal-open');
+    if (prevFocus && typeof prevFocus.focus === 'function') prevFocus.focus();
     if (onClose) onClose();
   };
+  // onKey は Esc で閉じ、Tab はモーダル内でフォーカスを循環させる（フォーカストラップ）。
   const onKey = (e) => {
-    if (e.key === 'Escape') close();
+    if (e.key === 'Escape') {
+      close();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const items = focusableItems(container);
+    if (items.length === 0) {
+      e.preventDefault();
+      return;
+    }
+    const first = items[0];
+    const last = items[items.length - 1];
+    const cur = document.activeElement;
+    if (e.shiftKey && (cur === first || !container.contains(cur))) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (cur === last || !container.contains(cur))) {
+      e.preventDefault();
+      first.focus();
+    }
   };
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) close();
@@ -34,12 +58,25 @@ export function openModal(container, { onClose } = {}) {
   document.addEventListener('keydown', onKey);
 
   activeClose = close;
-  // 最初のフォーカス可能要素へ
-  const focusable = container.querySelector(
-    'input, button, textarea, select, [tabindex]',
-  );
-  if (focusable) focusable.focus();
+  // 最初のフォーカス可能要素へ（disabled / hidden は除外）。
+  const items = focusableItems(container);
+  if (items.length > 0) items[0].focus();
+  else container.focus();
   return close;
+}
+
+// focusableItems は container 内の実際にフォーカス可能な要素を文書順で返す
+//（disabled・非表示・tabindex=-1 を除外）。
+function focusableItems(container) {
+  const sel = 'a[href], input, button, textarea, select, [tabindex]';
+  return Array.from(container.querySelectorAll(sel)).filter((el) => {
+    if (el.disabled) return false;
+    if (el.getAttribute('tabindex') === '-1') return false;
+    if (el.hidden) return false;
+    // 非表示（display:none 等）は offsetParent が null。fixed 要素は例外だが
+    // モーダル内容には十分。
+    return el.offsetParent !== null || el === document.activeElement;
+  });
 }
 
 // closeModal は現在開いているモーダルを閉じる（無ければ何もしない）。

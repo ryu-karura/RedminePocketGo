@@ -19,8 +19,13 @@ export function initLogin(root, { onSuccess } = {}) {
   };
 
   if (!isPasskeySupported()) {
+    // 登録コード・ブートストラップ経路も最終的に navigator.credentials.create を
+    // 呼ぶため、パスキー非対応環境ではすべての導線を無効化する（誤誘導しない）。
     els.passkeyBtn.disabled = true;
-    showError(els.err, 'この環境はパスキーに対応していません。登録コードまたは Redmine の情報でログインしてください。');
+    els.enrollLink.disabled = true;
+    els.bootstrapLink.disabled = true;
+    showError(els.err, 'この環境はパスキーに対応していません。パスキー対応ブラウザ（かつ HTTPS などのセキュアコンテキスト）でアクセスしてください。');
+    return;
   }
 
   els.passkeyBtn.addEventListener('click', () => withBusy(els.passkeyBtn, els.err, async () => {
