@@ -1,0 +1,68 @@
+/* screens/issues.css — チケット一覧に固有のスタイル（Design.md §7.7）。
+ * hex は使わず tokens.css の変数のみ参照（CLAUDE.md §3.4）。 */
+
+.issues-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.back-link {
+  align-self: flex-start;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* フィルタ行は横スクロール（狭い画面でも 44px タッチ領域を確保） */
+.filter-row {
+  display: flex;
+  gap: var(--space-2);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.filter-field { flex: 0 0 auto; }
+.filter-field select { min-height: 44px; width: auto; }
+
+#issuesTree {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+/* 1 行 2 段組 */
+.issue-row { padding: var(--space-1) 0; }
+.issue-row__head { font-weight: 600; }
+.issue-id { color: var(--muted); font-weight: 600; margin-right: var(--space-1); }
+.issue-row__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-1);
+  font-size: var(--fs-sm);
+}
+.issue-row__meta .assignee { color: var(--muted); }
+
+.issues-hint {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  padding: var(--space-3) var(--space-2) 0;
+}
+
+/* 作成フローティングボタン（右下、親指の届く位置） */
+.fab {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-5);
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: var(--on-primary);
+  border: none;
+  font-size: var(--fs-xl);
+  line-height: 1;
+  box-shadow: var(--shadow-md);
+  z-index: 20;
+}
+.fab:hover:not(:disabled) { background: var(--primary-hover); }

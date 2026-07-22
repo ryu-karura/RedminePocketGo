@@ -1,0 +1,12 @@
+<!-- projects 画面フラグメント（Design.md §7.6）。<section> ラッパーは付けない
+     （app.js が data-screen 付き <section> を用意する）。中身は projects.js が
+     状態に応じて描画する。 -->
+<div class="screen-toolbar">
+  <label class="search-field">
+    <span class="visually-hidden">プロジェクトを検索</span>
+    <input id="projectSearch" type="search" inputmode="search"
+           placeholder="プロジェクトを検索" aria-label="プロジェクトを検索"
+           autocomplete="off">
+  </label>
+</div>
+<div id="projectsBody" class="screen-body"></div>

@@ -1,0 +1,78 @@
+/* screens/issue-detail.css — チケット詳細に固有のスタイル（Design.md §7.8）。
+ * hex は使わず tokens.css の変数のみ参照（CLAUDE.md §3.4）。 */
+
+.detail-body { padding-bottom: 96px; } /* 固定コメント欄の高さ分あける */
+
+.issue-detail__head h1 {
+  font-size: var(--fs-lg);
+  margin-bottom: var(--space-2);
+}
+.badge-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.badge.tracker { background: var(--surface-2); color: var(--muted); }
+
+.attr-list {
+  margin: var(--space-4) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.attr { display: flex; gap: var(--space-3); }
+.attr dt { color: var(--muted); min-width: 4em; margin: 0; }
+.attr dd { margin: 0; }
+.due-ok { color: var(--ok); }
+.due-warn { color: var(--warn); }
+.due-crit { color: var(--crit); }
+
+.progress {
+  display: inline-block;
+  width: 120px;
+  height: 10px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  vertical-align: middle;
+}
+.progress__bar { display: block; height: 100%; background: var(--primary); }
+
+.edit-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin: var(--space-4) 0;
+}
+.edit-row label { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--fs-sm); }
+.edit-row select { width: auto; min-height: 44px; }
+
+.detail-section { margin: var(--space-4) 0; }
+.detail-section h2 { font-size: var(--fs-base); color: var(--muted); }
+.issue-desc { white-space: pre-wrap; }
+.muted { color: var(--muted); }
+
+.attach-list, .journal-list { list-style: none; padding: 0; margin: 0; }
+.journal {
+  border-top: 1px solid var(--border);
+  padding: var(--space-3) 0;
+}
+.journal__meta { color: var(--muted); font-size: var(--fs-sm); }
+.journal__notes { white-space: pre-wrap; margin-top: var(--space-1); }
+
+/* 画面下部に固定するコメント入力欄 */
+.comment-composer {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  z-index: 15;
+}
+.comment-composer textarea { flex: 1; min-height: 44px; }
+.comment-composer .btn-primary { width: auto; padding: 0 var(--space-4); }
+
+@media (min-width: 900px) {
+  .comment-composer { left: 300px; } /* デスクトップはサイドバー幅ぶん右へ */
+}

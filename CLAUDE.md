@@ -305,8 +305,8 @@ this file, never a second source of truth.
 
 | Skill | Purpose |
 |---|---|
-| `implement` | **mandatory before any implementation work**: plan-driven staged workflow against `docs/plan.md` — one phase at a time, checkbox per commit |
-| `test` | which of test-unit / test-api / node --test / test-stack to run per change; failure → prevention-rule loop into `LESSONS.md` |
+| `implement` | **mandatory before any implementation work**: plan-driven staged workflow against `docs/plan.md` — one phase at a time, checkbox per commit; unattended (scheduled-trigger) runs additionally follow its "Unattended runs" rules (PR discovery → continue-or-recreate, safety, run log, stall detection) |
+| `test` | which of test-unit / test-api / node --test / test-e2e / test-stack to run per change (CI `.github/workflows/ci.yml` re-runs the suites on every push as independent verification); failure → prevention-rule loop into `LESSONS.md` |
 | `setup` | boot RedmineDocker dev stack + this server for local work |
 | `build` | build server, run shellcheck, verify static assets |
 | `docs-sync` | change-type → document map; keeps §6 honest |
@@ -314,8 +314,10 @@ this file, never a second source of truth.
 
 Plus the generally available skills: `superpowers-dev:*` (brainstorming,
 writing-plans, TDD, systematic-debugging, verification-before-completion,
-code review pair), `frontend-design`, `design:accessibility-review`,
-`design:ux-copy`, `elements-of-style:writing-clearly-and-concisely`.
+code review pair), `code-review` (the harness-provided diff reviewer used
+as the phase quality gate — see the `implement` skill), `frontend-design`,
+`design:accessibility-review`, `design:ux-copy`,
+`elements-of-style:writing-clearly-and-concisely`.
 
 ---
 

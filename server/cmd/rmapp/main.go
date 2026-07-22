@@ -3,12 +3,77 @@
 package main
 
 import (
+	"context"
+	"encoding/hex"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
+	"log/slog"
+	"net/http"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/ryu-karura/RedminePocketGo/server/internal/auth"
+	"github.com/ryu-karura/RedminePocketGo/server/internal/config"
+	"github.com/ryu-karura/RedminePocketGo/server/internal/credential"
+	"github.com/ryu-karura/RedminePocketGo/server/internal/httpapi"
+	"github.com/ryu-karura/RedminePocketGo/server/internal/proxy"
+	"github.com/ryu-karura/RedminePocketGo/server/internal/redmine"
+	"github.com/ryu-karura/RedminePocketGo/server/internal/store"
+	"github.com/ryu-karura/RedminePocketGo/server/internal/webfs"
 )
 
 var version = "dev"
+
+// readKEK はファイルから KEK を読み込む。ファイルは 16 進または生バイトの
+// どちらでもよい（generate-secrets.sh は 16 進を書き出す）。KEK 自体は
+// ログにもエラーにも出さない（CLAUDE.md §4.4）。
+func readKEK(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("crypto.kekFile を読めません: %w", err)
+	}
+	// generate-secrets.sh は 64 桁の 16 進を書き出す。まずそれを優先。
+	trimmed := strings.TrimSpace(string(raw))
+	if len(trimmed) == 64 {
+		if decoded, err := hex.DecodeString(trimmed); err == nil {
+			return decoded, nil
+		}
+	}
+	// 生の 32 バイト（末尾改行の有無を許容）。生バイトは TrimSpace しない。
+	if len(raw) == 32 {
+		return raw, nil
+	}
+	if len(trimmed) == 32 {
+		return []byte(trimmed), nil
+	}
+	return nil, fmt.Errorf("crypto.kekFile は 64 桁の 16 進または 32 バイトである必要があります")
+}
+
+// vaultKeyProvider は保管庫を httpapi.KeyProvider に適合させる。復号した
+// 平文キーはこの呼び出しの戻り値としてハンドラ内に閉じ、保存しない。
+type vaultKeyProvider struct{ vault *credential.Vault }
+
+func (v vaultKeyProvider) APIKeyValue(ctx context.Context, userID string) (string, error) {
+	key, err := v.vault.LoadAPIKey(ctx, userID)
+	if err != nil {
+		// 未登録・無効化済みは再紐付けを促すべき状態として集約層へ伝える。
+		// それ以外（DB 障害・復号失敗）は素通しして 500 に写像させる。
+		if errors.Is(err, credential.ErrNoCredential) || errors.Is(err, credential.ErrCredentialInvalid) {
+			return "", httpapi.ErrNoRedmineKey
+		}
+		return "", err
+	}
+	return key.Value(), nil
+}
+
+func (v vaultKeyProvider) MarkInvalid(ctx context.Context, userID string) error {
+	return v.vault.MarkInvalid(ctx, userID)
+}
 
 func main() {
 	if err := run(os.Stdout, os.Args[1:]); err != nil {
@@ -17,9 +82,165 @@ func main() {
 	}
 }
 
-// run は起動処理の本体。設定読み込みとサーバー起動の配線は
-// docs/plan.md フェーズ1以降で実装する。
-func run(out io.Writer, _ []string) error {
-	fmt.Fprintf(out, "rmapp %s\n", version)
-	return nil
+func run(out io.Writer, args []string) error {
+	fs := flag.NewFlagSet("rmapp", flag.ContinueOnError)
+	fs.SetOutput(out)
+	var (
+		configPath  = fs.String("config", "config/config.yaml", "設定ファイルのパス")
+		listen      = fs.String("listen", "", "待ち受けアドレス（設定ファイルより優先）")
+		logLevel    = fs.String("logLevel", "", "ログレベル（設定ファイルより優先）")
+		showVersion = fs.Bool("version", false, "バージョンを表示して終了")
+	)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *showVersion {
+		fmt.Fprintf(out, "rmapp %s\n", version)
+		return nil
+	}
+
+	// フラグ > 環境変数 > ファイル > 既定値（config.Load が後段を担う）
+	overrides := map[string]string{}
+	if *listen != "" {
+		overrides["listen"] = *listen
+	}
+	if *logLevel != "" {
+		overrides["logLevel"] = *logLevel
+	}
+
+	cfg, err := config.Load(*configPath, overrides, nil)
+	if err != nil {
+		return err
+	}
+
+	logger := newLogger(cfg.LogLevel, os.Stderr)
+	slog.SetDefault(logger)
+
+	st, err := store.Open(cfg.Database.DSN)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if err := st.Migrate(); err != nil {
+		return err
+	}
+
+	sessions := auth.NewSessions(st, auth.Config{
+		IdleTimeout:     time.Duration(cfg.Session.IdleTimeoutHours) * time.Hour,
+		AbsoluteTimeout: time.Duration(cfg.Session.AbsoluteTimeoutHours) * time.Hour,
+		CookieName:      cfg.Session.CookieName,
+		SecureCookie:    cfg.Session.SecureCookie,
+	})
+	wa, err := auth.NewWebAuthn(st, auth.WebAuthnConfig{
+		RPID:             cfg.WebAuthn.RPID,
+		RPName:           cfg.WebAuthn.RPName,
+		Origins:          cfg.WebAuthn.Origins,
+		UserVerification: cfg.WebAuthn.UserVerification,
+		ChallengeTTL:     time.Duration(cfg.WebAuthn.ChallengeTTLMinutes) * time.Minute,
+	})
+	if err != nil {
+		return err
+	}
+
+	kek, err := readKEK(cfg.Crypto.KEKFile)
+	if err != nil {
+		return err
+	}
+	vault, err := credential.NewVault(st, kek, cfg.Crypto.KeyVersion)
+	if err != nil {
+		return err
+	}
+
+	var bootstrapSvc httpapi.BootstrapService
+	var relinkSvc httpapi.RelinkService
+	if cfg.Features.PasswordBootstrap {
+		bs := auth.NewBootstrap(st, wa, vault, auth.BootstrapConfig{
+			BaseURL: cfg.Redmine.BaseURL,
+			SubURI:  cfg.Redmine.SubURI,
+			Timeout: time.Duration(cfg.Redmine.TimeoutSeconds) * time.Second,
+		})
+		bootstrapSvc = bs
+		relinkSvc = bs
+	}
+
+	apiMux := http.NewServeMux()
+	// 未実装の /api パスはエンベロープの 404（個別ルートが優先される）。
+	apiMux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
+		httpapi.WriteError(w, httpapi.CodeNotFound, "no such endpoint")
+	})
+	(&httpapi.AuthHandler{
+		WebAuthn:    wa,
+		Sessions:    sessions,
+		Users:       st,
+		Credentials: st,
+		Limiter:     auth.NewRateLimiter(5, 60*time.Second),
+		Bootstrap:   bootstrapSvc,
+		Enrollment:  auth.NewEnrollment(st, wa),
+		Relink:      relinkSvc,
+		CookieName:  cfg.Session.CookieName,
+	}).RegisterRoutes(apiMux)
+	(&httpapi.DeviceHandler{Devices: st}).RegisterRoutes(apiMux)
+
+	// Redmine 中継（許可リスト経由。/api/redmine/ 配下）
+	relay := proxy.New(vault, proxy.Config{
+		BaseURL: cfg.Redmine.BaseURL,
+		SubURI:  cfg.Redmine.SubURI,
+		Timeout: time.Duration(cfg.Redmine.TimeoutSeconds) * time.Second,
+	})
+	apiMux.HandleFunc("/api/redmine/", relay.Handler("/api/redmine"))
+
+	// 集約 API（画面向け。ツリー化・詳細・メタ）
+	rmClient := redmine.NewClient(redmine.Config{
+		BaseURL:        cfg.Redmine.BaseURL,
+		SubURI:         cfg.Redmine.SubURI,
+		Timeout:        time.Duration(cfg.Redmine.TimeoutSeconds) * time.Second,
+		MaxRetries:     cfg.Redmine.MaxRetries,
+		MaxConcurrency: cfg.Redmine.MaxConcurrency,
+		PageSize:       cfg.Redmine.PageSize,
+	})
+	(&httpapi.AggregateHandler{
+		Redmine: rmClient,
+		Keys:    vaultKeyProvider{vault},
+		Cache:   httpapi.NewAggCache(),
+		Logger:  logger,
+	}).RegisterRoutes(apiMux)
+
+	mux := http.NewServeMux()
+	if cfg.BaseURL != "" {
+		mux.Handle(cfg.BaseURL+"/api/", http.StripPrefix(cfg.BaseURL, apiMux))
+	} else {
+		mux.Handle("/api/", apiMux)
+	}
+	if cfg.ServeStatic {
+		mux.Handle("/", webfs.Handler(cfg.Webroot, cfg.BaseURL, cfg.NoCache))
+	}
+
+	handler := httpapi.Chain(logger, sessions, cfg.Session.CookieName)(mux)
+
+	srv := &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	// SIGINT / SIGTERM で受け付けを止め、処理中のリクエストを待ってから
+	// 返る（defer の st.Close を確実に走らせる）。
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger.Info("rmapp starting", "listen", cfg.Listen, "version", version)
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		logger.Info("rmapp shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	}
 }

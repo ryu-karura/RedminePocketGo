@@ -1,0 +1,21 @@
+<!-- issues 画面フラグメント（Design.md §7.7）。中身は issues.js が状態に応じて
+     描画する。フィルタ行は横スクロール、右下に作成 FAB。 -->
+<div class="screen-toolbar issues-toolbar">
+  <a id="issuesBack" class="back-link" href="#projects" aria-label="プロジェクト一覧へ戻る">← プロジェクト</a>
+  <div class="filter-row" role="group" aria-label="チケットの絞り込み">
+    <label class="filter-field">
+      <span class="visually-hidden">状態で絞り込み</span>
+      <select id="issueStatusFilter" aria-label="状態で絞り込み"></select>
+    </label>
+    <label class="filter-field">
+      <span class="visually-hidden">担当で絞り込み</span>
+      <select id="issueAssigneeFilter" aria-label="担当で絞り込み"></select>
+    </label>
+    <label class="filter-field">
+      <span class="visually-hidden">優先度で絞り込み</span>
+      <select id="issuePriorityFilter" aria-label="優先度で絞り込み"></select>
+    </label>
+  </div>
+</div>
+<div id="issuesBody" class="screen-body"></div>
+<button id="issueCreateFab" class="fab" type="button" aria-label="チケットを作成">＋</button>

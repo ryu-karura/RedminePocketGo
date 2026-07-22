@@ -1,0 +1,32 @@
+/* screens/projects.css — プロジェクト一覧に固有のスタイル（Design.md §7.6）。
+ * hex は使わず tokens.css の変数のみ参照（CLAUDE.md §3.4）。 */
+
+.screen-toolbar {
+  position: sticky;
+  top: 56px; /* トップバー直下に貼り付く */
+  z-index: 5;
+  background: var(--bg);
+  padding: var(--space-3) 0;
+}
+.search-field { display: block; }
+.search-field input { min-height: 44px; }
+
+.screen-body {
+  margin-top: var(--space-2);
+}
+
+/* 読み込み中スケルトン */
+.skeleton-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+.skeleton-row { height: 44px; }
+
+/* Tabulator ツリーの見た目調整（本文は vendor CSS が土台） */
+#projectsTree {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}

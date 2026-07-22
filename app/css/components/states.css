@@ -1,0 +1,119 @@
+/* components/states.css — 4 状態（loading / empty / error / populated）と
+ * トースト・バッジなどの共通コンポーネント。hex なし。 */
+
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-2), var(--surface), var(--surface-2));
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+  border-radius: var(--radius-sm);
+  height: 1em;
+}
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+}
+
+.state-empty, .state-error {
+  text-align: center;
+  padding: var(--space-5) var(--space-4);
+  color: var(--muted);
+}
+.state-error { color: var(--crit); }
+.state-error button { margin-top: var(--space-3); }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-4);
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: var(--on-primary);
+  border-color: var(--primary);
+  width: 100%;
+  font-weight: 600;
+}
+.btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+
+.btn-link {
+  background: transparent;
+  border: none;
+  color: var(--primary);
+  min-height: 44px;
+  padding: var(--space-2);
+}
+
+.inline-error {
+  color: var(--crit);
+  background: var(--crit-soft);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  margin-top: var(--space-3);
+  font-size: var(--fs-sm);
+}
+.inline-error:empty { display: none; }
+
+.toast {
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-left: 4px solid var(--primary);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-3) var(--space-4);
+}
+.toast.ok { border-left-color: var(--ok); }
+.toast.warn { border-left-color: var(--warn); }
+.toast.crit { border-left-color: var(--crit); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.badge.status-new { background: var(--status-new-soft); color: var(--status-new); }
+.badge.status-open { background: var(--status-open-soft); color: var(--status-open); }
+.badge.status-closed { background: var(--status-closed-soft); color: var(--status-closed); }
+
+/* 優先度バッジ（色分けは必ずラベルと併記＝色単独で意味を持たせない） */
+.badge.prio-urgent { background: var(--crit-soft); color: var(--crit); }
+.badge.prio-high { background: var(--warn-soft); color: var(--warn); }
+.badge.prio-normal { background: var(--surface-2); color: var(--muted); }
+.badge.prio-low { background: var(--surface-2); color: var(--muted); }
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--muted);
+  margin: var(--space-4) 0;
+  font-size: var(--fs-sm);
+}
+.divider::before, .divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.spinner {
+  display: inline-block;
+  width: 1em; height: 1em;
+  border: 2px solid var(--primary-soft);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: -0.15em;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
