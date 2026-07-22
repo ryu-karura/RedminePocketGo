@@ -202,8 +202,10 @@
 
 - [x] ヘルスエンドポイント（`GET /healthz` / `GET /readyz`。Setup.md §11。
       test-stack.sh が叩く対象のため test-stack.sh より先に実装）
-- [ ] `scripts/test-stack.sh`（起動確認、ヘルスチェック、許可リスト経由の
-      往復 1 件。CLAUDE.md §5）
+- [x] `scripts/test-stack.sh`（起動確認、ヘルスチェック、許可リスト経由の
+      往復 1 件。CLAUDE.md §5。往復確認は `server/stacktest`（build tag
+      `stack`）を呼び出す。実 RedmineDocker への到達が前提のため、通常の
+      test-unit/test-api/CI には含めない）
 - [ ] `scripts/backup.sh` / `scripts/restore.sh`（SQLite と secrets、
       restore は確認リテラル必須）
 - [ ] ドキュメント同期の最終確認（Design.md / Setup.md / Manual.md /

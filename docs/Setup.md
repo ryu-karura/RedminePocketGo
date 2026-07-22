@@ -385,7 +385,19 @@ sudo systemctl status rmapp
 ## 11. 構築後の確認
 
 `scripts/test-stack.sh` が、起動中の RedmineDocker 開発スタックに対して
-以下を自動で確認します。手動で確認する場合は表のとおりです。
+サーバーの起動・ヘルスチェック（`/healthz` / `/readyz`）・許可リスト経由の
+Redmine 往復 1 件を自動で確認します。
+
+```bash
+RMAPP_STACK_API_KEY="取得した API キー" scripts/test-stack.sh
+```
+
+`RMAPP_STACK_API_KEY`（3.3 で確認した API キー）は必須です。設定ファイルは
+既定で `server/config/config.yaml` を使います。別の設定を使う場合は
+`RMAPP_STACK_CONFIG` でパスを指定します。
+
+それ以外の項目（パスキー登録・ログイン、プロジェクト表示など）は
+ブラウザでの手動確認が必要です。手動で確認する場合は表のとおりです。
 
 | 確認項目 | 方法 |
 |---|---|
