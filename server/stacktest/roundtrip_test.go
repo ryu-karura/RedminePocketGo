@@ -70,7 +70,11 @@ func TestProxyRoundTripAgainstRealRedmine(t *testing.T) {
 	srv := httptest.NewServer(withStackTestSession(mux))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/redmine/issues.json?limit=1")
+	// 上流がハングした場合でもテスト自体は時間内に終わるよう、既定の
+	// http.DefaultClient（タイムアウトなし）ではなく明示的な期限を設ける。
+	// リレー自身のコンテキスト期限（redmine.timeoutSeconds）に猶予を足す。
+	client := &http.Client{Timeout: time.Duration(cfg.Redmine.TimeoutSeconds)*time.Second + 5*time.Second}
+	resp, err := client.Get(srv.URL + "/api/redmine/issues.json?limit=1")
 	if err != nil {
 		t.Fatalf("GET /api/redmine/issues.json: %v", err)
 	}

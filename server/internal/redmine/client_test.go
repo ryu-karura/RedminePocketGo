@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -300,5 +301,9 @@ func TestClientPingUnreachable(t *testing.T) {
 	}
 	if !errors.Is(err, ErrUpstream) {
 		t.Errorf("Ping error = %v; want wrapping ErrUpstream", err)
+	}
+	var netErr *net.OpError
+	if !errors.As(err, &netErr) {
+		t.Errorf("Ping error = %v; want the original connection error preserved in the chain (errors.As)", err)
 	}
 }

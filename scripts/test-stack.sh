@@ -51,6 +51,7 @@ listen_addr="127.0.0.1:18090"
 bin_path="${server_dir}/bin/rmapp-stacktest"
 
 log "サーバーをビルドします"
+mkdir -p "$(dirname -- "${bin_path}")"
 (cd "${server_dir}" && go build -o "${bin_path}" ./cmd/rmapp)
 
 pid=""

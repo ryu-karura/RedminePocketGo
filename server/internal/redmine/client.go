@@ -121,7 +121,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUpstream, err)
+		return fmt.Errorf("%w: %w", ErrUpstream, err)
 	}
 	defer resp.Body.Close()
 	return nil
