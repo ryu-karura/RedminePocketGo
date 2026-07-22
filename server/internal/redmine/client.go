@@ -111,6 +111,22 @@ type Status struct {
 	IsClosed bool   `json:"is_closed"`
 }
 
+// Ping は上流への到達性のみを確認する（readyz 用）。API キー・リトライ・
+// 同時接続の上限は使わない — レスポンスが返れば（ステータスを問わず）
+// 到達可能とみなし、接続自体ができない場合のみ ErrUpstream を返す。
+func (c *Client) Ping(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.root+"/", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUpstream, err)
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
 // ---- 取得 ----
 
 // get は 1 リクエストを実行し JSON を v に読む。一時的な失敗（接続エラー、
