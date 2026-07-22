@@ -58,6 +58,21 @@ func TestEnrollmentUnknownCode(t *testing.T) {
 	}
 }
 
+func TestEnrollmentIssueCodeNonCollisionErrorNotRetried(t *testing.T) {
+	e, _ := newTestEnrollment(t)
+	if err := e.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := e.IssueCode(context.Background(), "u1")
+	if err == nil {
+		t.Fatal("IssueCode: want error after store closed, got nil")
+	}
+	if !strings.Contains(err.Error(), "database is closed") {
+		t.Errorf("IssueCode err = %v; want underlying \"database is closed\" reason preserved", err)
+	}
+}
+
 func TestEnrollmentCodeExpires(t *testing.T) {
 	e, _ := newTestEnrollment(t)
 	ctx := context.Background()

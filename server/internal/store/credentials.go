@@ -161,14 +161,21 @@ func (s *Store) DeleteExpiredChallenges(ctx context.Context, now time.Time) erro
 	return nil
 }
 
+// ErrDuplicateEnrollmentCode はコードのハッシュが主キー衝突した場合
+// （まれな乱数衝突）。呼び出し側はこの場合に限り再生成して良い。
+var ErrDuplicateEnrollmentCode = errors.New("store: この登録コードは既に発行されています")
+
 // InsertEnrollmentCode は端末追加コードを保存する（ハッシュのみ）。
-// 同じハッシュが既にあれば主キー衝突でエラーになる（呼び出し側で再生成）。
+// 同じハッシュが既にあれば ErrDuplicateEnrollmentCode を返す（呼び出し側で再生成）。
 func (s *Store) InsertEnrollmentCode(ctx context.Context, codeHash, userID string, expiresAt time.Time) error {
 	_, err := s.db.ExecContext(ctx,
 		"INSERT INTO enrollment_codes (code_hash, user_id, expires_at) VALUES (?, ?, ?)",
 		codeHash, userID, fmtTime(expiresAt),
 	)
 	if err != nil {
+		if isConstraintErr(err) {
+			return ErrDuplicateEnrollmentCode
+		}
 		return fmt.Errorf("store: 登録コード保存に失敗しました: %w", err)
 	}
 	return nil

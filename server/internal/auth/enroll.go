@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"math/big"
 	"time"
@@ -31,18 +32,25 @@ func NewEnrollment(st *store.Store, wa *WebAuthn) *Enrollment {
 // IssueCode は利用者に 6 桁の登録コードを発行する。
 func (e *Enrollment) IssueCode(ctx context.Context, userID string) (code string, expiresAt time.Time, err error) {
 	expiresAt = e.now().UTC().Add(e.ttl)
-	// 6 桁 100 万通りのため、まれなハッシュ衝突（主キー重複）は再生成で逃がす
+	// 6 桁 100 万通りのため、まれなハッシュ衝突（主キー重複）は再生成で逃がす。
+	// 衝突以外の失敗（DB 障害等）は再試行せず、原因を保ったまま即座に返す。
+	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
 		if err != nil {
 			return "", time.Time{}, fmt.Errorf("auth: コード生成に失敗しました: %w", err)
 		}
 		code = fmt.Sprintf("%06d", n.Int64())
-		if err := e.store.InsertEnrollmentCode(ctx, hashCode(code), userID, expiresAt); err == nil {
+		err = e.store.InsertEnrollmentCode(ctx, hashCode(code), userID, expiresAt)
+		if err == nil {
 			return code, expiresAt, nil
 		}
+		if !errors.Is(err, store.ErrDuplicateEnrollmentCode) {
+			return "", time.Time{}, fmt.Errorf("auth: 登録コードの発行に失敗しました: %w", err)
+		}
+		lastErr = err
 	}
-	return "", time.Time{}, fmt.Errorf("auth: 登録コードの発行に失敗しました（衝突が続きました）")
+	return "", time.Time{}, fmt.Errorf("auth: 登録コードの発行に失敗しました（衝突が続きました）: %w", lastErr)
 }
 
 // Redeem はコードを消費し、その利用者の登録セレモニーを開始する。
