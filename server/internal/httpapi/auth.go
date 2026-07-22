@@ -275,7 +275,11 @@ func (h *AuthHandler) relink(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, CodeInvalidRequest, "login and password are required")
 		return
 	}
-	key := "relink:" + limiterKey(r)
+	// bootstrap と違い relink は認証済みなので、キーは IP でなく利用者単位
+	// にする。IP キーだと同じ NAT/オフィス回線を共有する無関係な他利用者まで
+	// 巻き添えでロックされてしまう（bootstrap は未認証で IP しか手がかりが
+	// ないため IP キーだが、事情が異なる）。
+	key := "relink:" + sess.UserID
 	if h.Limiter != nil && !h.Limiter.Allow(key) {
 		WriteError(w, CodeRateLimited, "too many failed attempts")
 		return

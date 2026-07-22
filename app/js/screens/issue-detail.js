@@ -59,6 +59,12 @@ export async function initIssueDetail(section, params) {
     if (!patch) return false;
     try {
       await apiPutJson(`/api/redmine/issues/${encodeURIComponent(id)}.json`, patch);
+      // コメント送信なら再描画（load→render→wireComposer）で新しいコメント欄が
+      // 下書きを読み直す前に消しておく。後から消すと、既に再描画された新しい
+      // 欄へ古い下書きが一度表示されてしまい、送信済みなのに未送信に見える。
+      if (changes.notes != null) {
+        try { localStorage.removeItem(draftKey); } catch (e) { /* ignore */ }
+      }
       toast('更新しました', 'ok');
       await load(); // 最新状態を取り直して再描画
       return true;
@@ -150,12 +156,12 @@ export async function initIssueDetail(section, params) {
       e.preventDefault();
       const notes = input.value.trim();
       if (!notes) return;
+      // applyChange は成功・失敗どちらでも render() を呼んで DOM を作り直す
+      // （成功時は load()→render()、失敗時は直接 render()）ので、await の後は
+      // この btn/input は既に切り離されている。新しい要素は render() のたびに
+      // wireComposer() が再配線するので、ここでは待つだけでよい。
       btn.disabled = true;
-      const ok = await applyChange({ notes });
-      btn.disabled = false;
-      if (ok) {
-        try { localStorage.removeItem(draftKey); } catch (er) { /* ignore */ }
-      }
+      await applyChange({ notes });
     });
   }
 

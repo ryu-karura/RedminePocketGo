@@ -112,7 +112,7 @@ func (b *Bootstrap) Relink(ctx context.Context, userID, login, password string) 
 	}
 	u, err := b.store.GetUserByID(ctx, userID)
 	if err != nil {
-		return err
+		return fmt.Errorf("auth: 利用者の参照に失敗しました: %w", err)
 	}
 	if u == nil {
 		return fmt.Errorf("auth: 利用者が見つかりません")

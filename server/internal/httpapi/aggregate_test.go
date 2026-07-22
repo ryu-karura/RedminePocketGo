@@ -20,11 +20,15 @@ type fakeAggregator struct {
 	statuses   []redmine.Status
 	priorities []redmine.Ref
 	openCounts map[int]int // projectID -> 未完了件数
+	countErr   error       // 設定時、CountOpenIssues だけをこのエラーで失敗させる
 	err        error
 	calls      atomic.Int32
 }
 
 func (f *fakeAggregator) CountOpenIssues(_ context.Context, _ string, projectID int) (int, error) {
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
 	if f.err != nil {
 		return 0, f.err
 	}
@@ -117,6 +121,34 @@ func TestProjectsTreeIncludesOpenCounts(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, `"openIssues":12`) || !strings.Contains(body, `"openIssues":5`) {
 		t.Errorf("body lacks per-project open counts: %s", body)
+	}
+}
+
+// TestProjectsTreeOpenCountCancellationNotCached は、未完了件数の取得中に
+// リクエストが中断された（クライアント切断・タイムアウト）場合、欠測値の
+// ままのツリーが 60 秒キャッシュされないことを確認する（ttlCache はエラー
+// 時のみキャッシュしないため、enrichOpenCounts がこれをエラーとして正しく
+// 伝播する必要がある）。
+func TestProjectsTreeOpenCountCancellationNotCached(t *testing.T) {
+	agg := &fakeAggregator{
+		projects: []redmine.Project{{ID: 1, Name: "p"}},
+		countErr: context.Canceled,
+	}
+	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
+	if rec.Code == 200 {
+		t.Fatalf("status = 200; want an error status so the degraded tree isn't cached (body %s)", rec.Body)
+	}
+
+	// キャッシュされていなければ、次回は上流が正常なら populated で返る。
+	agg.countErr = nil
+	agg.openCounts = map[int]int{1: 7}
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"openIssues":7`) {
+		t.Errorf("status = %d body = %s; want 200 with openIssues:7 (proves the canceled attempt wasn't cached)", rec.Code, rec.Body)
 	}
 }
 

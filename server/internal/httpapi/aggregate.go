@@ -120,7 +120,7 @@ func (h *AggregateHandler) projectsTree(w http.ResponseWriter, r *http.Request) 
 }
 
 // enrichOpenCounts は各プロジェクトノードに未完了チケット数を後付けする
-//（Design.md §7.6）。件数は付随情報なので、上流 401（要再連携）だけを伝播し、
+// （Design.md §7.6）。件数は付随情報なので、上流 401（要再連携）だけを伝播し、
 // 一時障害などその他のエラーは当該ノードの件数を欠測（nil）にしてツリー描画は
 // 続行する。取得はキー単位で並行化するが、実際の上流並行数は Redmine
 // クライアント側のセマフォで抑えられる。
@@ -133,7 +133,7 @@ func (h *AggregateHandler) enrichOpenCounts(ctx context.Context, userID, apiKey 
 	sem := make(chan struct{}, maxParallel)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var authErr error
+	var reqErr error // 401、またはリクエスト自体の中断（欠測値をキャッシュしないため伝播）
 
 	for _, nd := range nodes {
 		wg.Add(1)
@@ -143,11 +143,22 @@ func (h *AggregateHandler) enrichOpenCounts(ctx context.Context, userID, apiKey 
 			defer func() { <-sem }()
 			n, err := h.Redmine.CountOpenIssues(ctx, apiKey, nd.ID)
 			if err != nil {
-				if errors.Is(err, redmine.ErrUnauthorized) {
+				switch {
+				case errors.Is(err, redmine.ErrUnauthorized):
 					mu.Lock()
-					authErr = err
+					reqErr = err
 					mu.Unlock()
-				} else {
+				case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+					// クライアント切断・タイムアウト等でリクエスト自体が
+					// 中断された。1 ノードの一時障害ではないので、欠測値の
+					// まま 60 秒キャッシュされないよう呼び出し元へ伝播する
+					// （ttlCache はエラー時キャッシュしない）。
+					mu.Lock()
+					if reqErr == nil {
+						reqErr = err
+					}
+					mu.Unlock()
+				default:
 					h.logErr("open issue count failed", userID, err)
 				}
 				return
@@ -157,7 +168,7 @@ func (h *AggregateHandler) enrichOpenCounts(ctx context.Context, userID, apiKey 
 		}(nd)
 	}
 	wg.Wait()
-	return authErr
+	return reqErr
 }
 
 // flattenProjectNodes はツリーを先行順の *ProjectNode 平坦列にする。

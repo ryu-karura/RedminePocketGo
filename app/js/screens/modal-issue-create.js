@@ -29,6 +29,11 @@ export async function initModalIssueCreate(container, params) {
     errorBox.hidden = !msg;
   }
 
+  // トラッカー・優先度の取得中は送信不可（4 状態のうち loading 相当。
+  // このモーダルは一覧画面ほど長い読み込みにならないため骨組みは出さず、
+  // フォーム操作を止めるだけに留める）。
+  submitBtn.disabled = true;
+  setOptions(trackerSel, [{ value: '', label: '読み込み中…' }]);
   try {
     const meta = await apiGetJson('/api/meta');
     setOptions(trackerSel, (meta.trackers || []).map((t) => ({ value: String(t.id), label: t.name })));
@@ -36,9 +41,9 @@ export async function initModalIssueCreate(container, params) {
       { value: '', label: '既定' },
       ...(meta.priorities || []).map((p) => ({ value: String(p.id), label: p.name })),
     ]);
+    submitBtn.disabled = false;
   } catch (e) {
     showError(messageFor(e));
-    submitBtn.disabled = true;
     return;
   }
 

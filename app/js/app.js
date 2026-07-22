@@ -51,8 +51,11 @@ function loadFragment(key) {
 
 // openModalRoute は #modal-<key>/<params> を開く。フラグメントは screens/ と
 // 違い使い切りなのでキャッシュしない。裏の画面はそのまま（route() 側で背景の
-// 再描画はしない）。
-async function openModalRoute(key, params) {
+// 再描画はしない）。token は呼び出し時点の navToken のスナップショット:
+// フラグメント取得・モジュール import は非同期なので、待っている間に別の
+// route() が発火してナビゲーションが先へ進んでいたら（token が古くなって
+// いたら）開かずに抜ける（着地点と無関係な画面にモーダルが重なるのを防ぐ）。
+async function openModalRoute(key, params, token) {
   const known = MODALS.find((m) => m.key === key);
   if (!known) return;
   const container = document.createElement('div');
@@ -68,6 +71,7 @@ async function openModalRoute(key, params) {
   } catch (e) {
     return;
   }
+  if (token !== navToken) return; // 待っている間にナビゲーションが先へ進んだ
   const initFn = mod[`initModal${toCamel(key)}`];
   openModal(container, {
     onClose: () => {
@@ -112,18 +116,8 @@ function toCamel(key) {
   return key.split('-').map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join('');
 }
 
-async function route() {
-  if (!authed) return; // 未認証（ログインオーバーレイ表示中）はルーティングしない
-  if (isModalHash(location.hash)) {
-    const [modalKey, ...modalParams] = location.hash.slice('#modal-'.length).split('/');
-    await openModalRoute(modalKey, modalParams);
-    return; // 背後の画面はそのまま（モーダルは前面に重ねるだけ）
-  }
-  closeModal(); // 通常画面へ遷移するときは開いていたモーダルを必ず閉じる
-  const raw = (location.hash || '#projects').slice(1);
-  const [key, ...rest] = raw.split('/');
-  const known = SCREENS.find((s) => s.key === key) || SCREENS[0];
-
+// renderScreen は通常の（モーダルでない）画面を描画する。
+async function renderScreen(known, rest) {
   const section = await loadFragment(known.key);
   for (const el of document.querySelectorAll('.screen')) el.classList.remove('active');
   section.classList.add('active');
@@ -131,6 +125,28 @@ async function route() {
   setTitle(known.label);
   document.getElementById('screens').focus();
   await initScreen(known.key, section, rest);
+}
+
+let navToken = 0; // route() が呼ばれるたびに進む世代カウンタ
+
+async function route() {
+  if (!authed) return; // 未認証（ログインオーバーレイ表示中）はルーティングしない
+  const token = ++navToken;
+  if (isModalHash(location.hash)) {
+    // モーダルのハッシュへ直接遷移（更新・ブックマーク等）した場合、背後の
+    // 画面が 1 つも無いままモーダルだけが浮くのを避けるため既定画面を敷く。
+    if (!document.querySelector('.screen.active')) {
+      await renderScreen(SCREENS[0], []);
+    }
+    const [modalKey, ...modalParams] = location.hash.slice('#modal-'.length).split('/');
+    await openModalRoute(modalKey, modalParams, token);
+    return; // 背後の画面はそのまま（モーダルは前面に重ねるだけ）
+  }
+  closeModal(); // 通常画面へ遷移するときは開いていたモーダルを必ず閉じる
+  const raw = (location.hash || '#projects').slice(1);
+  const [key, ...rest] = raw.split('/');
+  const known = SCREENS.find((s) => s.key === key) || SCREENS[0];
+  await renderScreen(known, rest);
 }
 
 // ---- 認証ゲート ----
