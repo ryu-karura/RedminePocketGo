@@ -62,7 +62,11 @@ export function expandedIdsFor(query, persisted, searchAncestors) {
 }
 
 // collectMatchAncestors は述語にマッチするノードの祖先 id 集合を返す
-//（検索時に自動展開すべきノード）。マッチ自身は含めない。
+//（検索時に自動展開すべきノード）。あるノードが「マッチのみ」で子孫に
+// マッチがない場合はそのノード自身の id は含めない。ただし子孫にマッチが
+// あるノードは、そのノード自身がマッチしているか否かに関わらず、子孫の
+// 祖先として id が集合に含まれる（そのノードを展開しないと子孫のマッチが
+// 見えないため）。
 export function collectMatchAncestors(nodes, pred, childrenKey = CHILDREN) {
   const ids = new Set();
   const walk = (ns, ancestors) => {
