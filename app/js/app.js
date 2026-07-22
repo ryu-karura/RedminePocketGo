@@ -5,6 +5,7 @@ import { apiGetJson, apiPostJson, ApiError } from './common/api.js';
 import {
   initTheme, initDrawer, setActiveNav, setTitle, toast, showLogin, hideLogin,
 } from './common/shell.js';
+import { openModal, closeModal, isModalHash } from './common/modal.js';
 import { initLogin } from './screens/login.js';
 
 // SCREENS: key / label / init。login はオーバーレイなのでナビには出さない。
@@ -14,6 +15,12 @@ export const SCREENS = [
   { key: 'issues', label: 'チケット' },
   { key: 'issue-detail', label: 'チケット詳細', hidden: true },
   { key: 'settings', label: '設定' },
+];
+
+// MODALS: #modal-<key> ルートの一覧（Design.md §3.1・§7.1）。画面と異なり
+// フラグメントは毎回取り直す（状態を使い回さない使い切りの UI のため）。
+export const MODALS = [
+  { key: 'issue-create' },
 ];
 
 const screenCache = new Map(); // key -> Promise<section element>
@@ -40,6 +47,36 @@ function loadFragment(key) {
   })();
   screenCache.set(key, p);
   return p;
+}
+
+// openModalRoute は #modal-<key>/<params> を開く。フラグメントは screens/ と
+// 違い使い切りなのでキャッシュしない。裏の画面はそのまま（route() 側で背景の
+// 再描画はしない）。
+async function openModalRoute(key, params) {
+  const known = MODALS.find((m) => m.key === key);
+  if (!known) return;
+  const container = document.createElement('div');
+  try {
+    const res = await fetch(`screens/modal-${key}.html`);
+    container.innerHTML = res.ok ? await res.text() : '';
+  } catch {
+    container.innerHTML = '';
+  }
+  let mod;
+  try {
+    mod = await import(`./screens/modal-${key}.js`);
+  } catch (e) {
+    return;
+  }
+  const initFn = mod[`initModal${toCamel(key)}`];
+  openModal(container, {
+    onClose: () => {
+      // Esc・背景クリック・キャンセルボタンいずれの場合も、ハッシュが
+      // モーダルのままなら元の画面へ戻す（ハッシュと表示状態を一致させる）。
+      if (isModalHash(location.hash)) history.back();
+    },
+  });
+  if (typeof initFn === 'function') await initFn(container, params);
 }
 
 // initScreen は js/screens/<key>.js の init を呼ぶ。未実装ならプレースホルダ。
@@ -77,6 +114,12 @@ function toCamel(key) {
 
 async function route() {
   if (!authed) return; // 未認証（ログインオーバーレイ表示中）はルーティングしない
+  if (isModalHash(location.hash)) {
+    const [modalKey, ...modalParams] = location.hash.slice('#modal-'.length).split('/');
+    await openModalRoute(modalKey, modalParams);
+    return; // 背後の画面はそのまま（モーダルは前面に重ねるだけ）
+  }
+  closeModal(); // 通常画面へ遷移するときは開いていたモーダルを必ず閉じる
   const raw = (location.hash || '#projects').slice(1);
   const [key, ...rest] = raw.split('/');
   const known = SCREENS.find((s) => s.key === key) || SCREENS[0];

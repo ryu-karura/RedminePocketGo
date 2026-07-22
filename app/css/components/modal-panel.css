@@ -1,0 +1,54 @@
+/* components/modal-panel.css — モーダル内の1枚パネル共通スタイル
+ * （#modal-<key> ルートの中身。hex なし、tokens.css の変数のみ）。 */
+
+.modal-panel {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  width: min(92vw, 480px);
+  max-height: 88vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-4) 0;
+}
+.modal-panel__head h2 { font-size: var(--fs-lg); margin: 0; }
+
+.modal-close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: var(--fs-lg);
+  line-height: 1;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.modal-panel__body {
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
+}
+
+.modal-panel__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.modal-panel__actions .btn-primary { width: auto; padding: 0 var(--space-4); }

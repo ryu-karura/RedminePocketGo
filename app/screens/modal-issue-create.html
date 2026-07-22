@@ -1,0 +1,32 @@
+<!-- チケット作成モーダル（Design.md §7.7 の FAB から開く。#modal-issue-create/<projectId>）。
+     中身は modal-issue-create.js が状態に応じて描画・検証する。使い切りの
+     フラグメントなので、他の画面と違いキャッシュされない（app.js 側）。 -->
+<div class="modal-panel" aria-labelledby="issueCreateTitle">
+  <header class="modal-panel__head">
+    <h2 id="issueCreateTitle">チケットを作成</h2>
+    <button type="button" class="modal-close" id="issueCreateClose" aria-label="閉じる">×</button>
+  </header>
+  <form id="issueCreateForm" class="modal-panel__body">
+    <div id="issueCreateError" class="inline-error" role="alert" hidden></div>
+    <label class="form-field">
+      <span>トラッカー</span>
+      <select id="createTracker" aria-required="true"></select>
+    </label>
+    <label class="form-field">
+      <span>件名</span>
+      <input id="createSubject" type="text" aria-required="true" maxlength="255">
+    </label>
+    <label class="form-field">
+      <span>優先度</span>
+      <select id="createPriority"></select>
+    </label>
+    <label class="form-field">
+      <span>説明</span>
+      <textarea id="createDescription" rows="4"></textarea>
+    </label>
+    <div class="modal-panel__actions">
+      <button type="button" class="btn-link" id="issueCreateCancel">キャンセル</button>
+      <button type="submit" class="btn-primary" id="issueCreateSubmit">作成</button>
+    </div>
+  </form>
+</div>

@@ -29,6 +29,7 @@ import (
 // fakeRedmine は E2E に必要な上流エンドポイントだけを返す:
 //   - /my/account.json … ブートストラップ（BasicAuth → api_key を返す）
 //   - /projects.json    … 集約 API（X-Redmine-Api-Key 検証、親子ツリー）
+//
 // subURI="" のため、上流パスにサブ URI は付かない。未対応パスは 404 にして
 // 経路の取り違えを検知する。
 func fakeRedmine(t *testing.T) *httptest.Server {
@@ -37,6 +38,14 @@ func fakeRedmine(t *testing.T) *httptest.Server {
 	var mu sync.Mutex
 	statusID, statusName := 2, "進行中"
 	names := map[int]string{1: "新規", 2: "進行中", 5: "完了"}
+	// 作成モーダルからの POST /issues.json は新規チケットとして保持し、
+	// 続く GET /issues/{id}.json（詳細画面への遷移）で読み返せるようにする。
+	type createdIssue struct {
+		Subject, Description, TrackerName, PriorityName string
+		TrackerID, PriorityID                           int
+	}
+	nextID := 999
+	created := map[int]createdIssue{}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 個別チケット（詳細取得 / インライン更新）。/issues/{id}.json。
@@ -59,6 +68,23 @@ func fakeRedmine(t *testing.T) *httptest.Server {
 					mu.Unlock()
 				}
 				w.WriteHeader(http.StatusOK) // Redmine は 204 だが 2xx を透過
+				return
+			}
+			var id int
+			_, _ = fmt.Sscanf(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/issues/"), ".json"), "%d", &id)
+			if id != 101 {
+				mu.Lock()
+				ci, ok := created[id]
+				mu.Unlock()
+				if !ok {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"issue":{"id":%d,"subject":%q,"description":%q,`+
+					`"status":{"id":1,"name":"新規"},"priority":{"id":%d,"name":%q},`+
+					`"tracker":{"id":%d,"name":%q},"journals":[],"attachments":[]}}`,
+					id, ci.Subject, ci.Description, ci.PriorityID, ci.PriorityName, ci.TrackerID, ci.TrackerName)
 				return
 			}
 			mu.Lock()
@@ -97,6 +123,32 @@ func fakeRedmine(t *testing.T) *httptest.Server {
 		case "/issues.json":
 			if r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
 				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			if r.Method == http.MethodPost {
+				var body struct {
+					Issue struct {
+						Subject     string `json:"subject"`
+						Description string `json:"description"`
+						TrackerID   int    `json:"tracker_id"`
+						PriorityID  int    `json:"priority_id"`
+					} `json:"issue"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				trackerNames := map[int]string{1: "バグ"}
+				priorityNames := map[int]string{3: "低", 4: "通常", 6: "高"}
+				mu.Lock()
+				id := nextID
+				nextID++
+				created[id] = createdIssue{
+					Subject: body.Issue.Subject, Description: body.Issue.Description,
+					TrackerID: body.Issue.TrackerID, TrackerName: trackerNames[body.Issue.TrackerID],
+					PriorityID: body.Issue.PriorityID, PriorityName: priorityNames[body.Issue.PriorityID],
+				}
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				fmt.Fprintf(w, `{"issue":{"id":%d,"subject":%q}}`, id, body.Issue.Subject)
 				return
 			}
 			q := r.URL.Query()
@@ -349,6 +401,26 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("issue detail flow: %v", err)
+	}
+
+	// チケット作成モーダル: 一覧の FAB から開き、件名を入力して作成すると
+	// 新しいチケットの詳細（#issue-detail/999）へ遷移することを確認する。
+	err = chromedp.Run(ctx,
+		chromedp.Navigate(base+"/#issues/1"),
+		chromedp.WaitVisible(`.screen.active #issueCreateFab`, chromedp.ByQuery),
+		chromedp.Click(`.screen.active #issueCreateFab`, chromedp.ByQuery),
+		chromedp.WaitVisible(`#issueCreateForm`, chromedp.ByQuery),
+		shot("10-issue-create-modal.png"),
+		chromedp.SendKeys(`#createSubject`, "新規チケットE2E", chromedp.ByQuery),
+		chromedp.Click(`#issueCreateSubmit`, chromedp.ByQuery),
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active .issue-detail');if(!t)return false;`+
+				`var s=t.innerText;return s.indexOf('新規チケットE2E')>=0 && s.indexOf('#999')>=0;})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("11-issue-created.png"),
+	)
+	if err != nil {
+		t.Fatalf("issue create modal flow: %v", err)
 	}
 }
 

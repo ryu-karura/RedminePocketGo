@@ -10,7 +10,6 @@ import {
   pruneIssues, matchIssue, issueBadges, countClosed,
 } from '../common/issuefmt.js';
 import { escapeHtml, errorMessage } from '../common/utils.js';
-import { toast } from '../common/shell.js';
 
 export async function initIssues(section, params) {
   const projectId = params && params[0];
@@ -26,8 +25,9 @@ export async function initIssues(section, params) {
   let table = null;
 
   if (fab) {
-    // 作成モーダルは別タスク。ここでは導線だけ用意し、実装まではプレースホルダ。
-    fab.addEventListener('click', () => toast('チケットの作成は準備中です', 'warn'));
+    fab.addEventListener('click', () => {
+      location.hash = `#modal-issue-create/${encodeURIComponent(projectId)}`;
+    });
   }
 
   function destroy() {

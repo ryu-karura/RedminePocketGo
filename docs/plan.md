@@ -171,7 +171,7 @@
       クライアント側の追加読み込みは不要）
 - [x] `issue-detail` 画面（インライン編集は変更項目のみ送信、期日の残日数、
       固定コメント欄。Design.md §7.8）
-- [ ] チケット作成モーダル（`#modal-` ルート）
+- [x] チケット作成モーダル（`#modal-` ルート）
 - [ ] `settings` 画面（端末一覧・削除、登録コード発行、Redmine 連携状態と
       再紐付け、テーマ、ログアウト。Design.md §7.9）
 - [ ] 全画面の 4 状態（loading / empty / error+retry / populated）と

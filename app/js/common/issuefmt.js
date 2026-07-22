@@ -80,6 +80,36 @@ export function issuePatch(original, changes) {
   return Object.keys(issue).length ? { issue } : null;
 }
 
+// validateIssueCreate はチケット作成フォームの必須項目チェック（純粋関数）。
+// 不正な項目名をキーに利用者向けエラー文言を返す。問題なければ空オブジェクト。
+export function validateIssueCreate(fields) {
+  const f = fields || {};
+  const errors = {};
+  if (!f.projectId) errors.projectId = 'プロジェクトが指定されていません。';
+  if (!f.trackerId) errors.trackerId = 'トラッカーを選択してください。';
+  if (!f.subject || !String(f.subject).trim()) errors.subject = '件名を入力してください。';
+  return errors;
+}
+
+// issueCreatePayload はチケット作成 API（POST /api/redmine/issues.json）に送る
+// 最小の `{ issue: {...} }` を作る。呼び出し前に validateIssueCreate で
+// 検証しておくこと（ここでは検証しない）。空の説明・未選択の優先度は省く。
+export function issueCreatePayload(fields) {
+  const f = fields || {};
+  const issue = {
+    project_id: Number(f.projectId),
+    tracker_id: Number(f.trackerId),
+    subject: String(f.subject).trim(),
+  };
+  if (f.description != null && String(f.description).trim() !== '') {
+    issue.description = String(f.description);
+  }
+  if (f.priorityId != null && String(f.priorityId) !== '') {
+    issue.priority_id = Number(f.priorityId);
+  }
+  return { issue };
+}
+
 // matchIssue は絞り込み条件（状態種別・優先度種別・担当者 id）に対する述語。
 // 空（null/undefined/''）の条件は無視する。status は 'open'|'closed'|null。
 export function matchIssue(issue, meta, { status, priorityId, assigneeId } = {}) {

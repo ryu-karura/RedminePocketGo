@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   assigneeLabel, countClosed, filterOpen, issueBadges, matchIssue, pruneIssues,
-  issuePatch,
+  issuePatch, validateIssueCreate, issueCreatePayload,
 } from '../common/issuefmt.js';
 
 const statuses = [
@@ -88,6 +88,42 @@ test('issuePatch handles an originally-unassigned issue', () => {
   const orig = { status: { id: 1 }, priority: { id: 4 }, done_ratio: 0 };
   assert.deepEqual(issuePatch(orig, { assignedToId: 9 }), { issue: { assigned_to_id: 9 } });
   assert.equal(issuePatch(orig, { doneRatio: 0 }), null);
+});
+
+test('validateIssueCreate requires project, tracker and a non-blank subject', () => {
+  assert.deepEqual(
+    validateIssueCreate({ projectId: 1, trackerId: 1, subject: '件名' }),
+    {},
+  );
+  assert.deepEqual(validateIssueCreate({}), {
+    projectId: 'プロジェクトが指定されていません。',
+    trackerId: 'トラッカーを選択してください。',
+    subject: '件名を入力してください。',
+  });
+  assert.deepEqual(
+    validateIssueCreate({ projectId: 1, trackerId: 1, subject: '   ' }),
+    { subject: '件名を入力してください。' },
+  );
+});
+
+test('issueCreatePayload builds the minimal {issue:{...}} POST body', () => {
+  assert.deepEqual(
+    issueCreatePayload({ projectId: 1, trackerId: 2, subject: ' 新規チケット ' }),
+    { issue: { project_id: 1, tracker_id: 2, subject: '新規チケット' } },
+  );
+  assert.deepEqual(
+    issueCreatePayload({
+      projectId: '1', trackerId: '2', subject: '件名', priorityId: '6', description: '詳細です',
+    }),
+    { issue: { project_id: 1, tracker_id: 2, subject: '件名', description: '詳細です', priority_id: 6 } },
+  );
+  // 空の説明・優先度未選択は省く
+  assert.deepEqual(
+    issueCreatePayload({
+      projectId: 1, trackerId: 2, subject: '件名', priorityId: '', description: '   ',
+    }),
+    { issue: { project_id: 1, tracker_id: 2, subject: '件名' } },
+  );
 });
 
 test('matchIssue applies status/priority/assignee filters, ignoring empties', () => {

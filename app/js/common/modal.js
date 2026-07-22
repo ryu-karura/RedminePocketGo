@@ -84,7 +84,8 @@ export function closeModal() {
   if (activeClose) activeClose();
 }
 
-// isModalHash はハッシュがモーダルルートかを判定する。
+// isModalHash はハッシュがモーダルルートかを判定する（`#modal-<key>` に続く
+// `/<param>/...` も許可する。issue-create モーダルの projectId など）。
 export function isModalHash(hash) {
-  return /^#modal-[a-z0-9-]+$/i.test(hash || '');
+  return /^#modal-[a-z0-9-]+(\/.*)?$/i.test(hash || '');
 }
