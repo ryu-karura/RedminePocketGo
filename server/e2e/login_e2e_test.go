@@ -422,6 +422,28 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue create modal flow: %v", err)
 	}
+
+	// 設定画面: 登録済み端末（ブートストラップで作った 1 台）と Redmine 連携
+	// 状態（連携済み）が表示され、登録コードの発行で 6 桁コードが出ることを
+	// 確認する。
+	err = chromedp.Run(ctx,
+		chromedp.Navigate(base+"/#settings"),
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active');if(!t)return false;`+
+				`var s=t.innerText;return s.indexOf('連携済み')>=0 && s.indexOf('端末')>=0 `+
+				`&& document.querySelectorAll('.screen.active .device-row').length>=1;})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("12-settings.png"),
+		chromedp.Click(`.screen.active #enrollIssue`, chromedp.ByQuery),
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active .enrollment-code__value');`+
+				`return !!t && /^\d{6}$/.test(t.innerText.trim());})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("13-settings-enrollment-code.png"),
+	)
+	if err != nil {
+		t.Fatalf("settings screen flow: %v", err)
+	}
 }
 
 // waitDrawerOrDump は .drawer__link の出現を待ち、時間切れならログイン

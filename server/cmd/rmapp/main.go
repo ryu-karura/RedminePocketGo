@@ -152,12 +152,15 @@ func run(out io.Writer, args []string) error {
 	}
 
 	var bootstrapSvc httpapi.BootstrapService
+	var relinkSvc httpapi.RelinkService
 	if cfg.Features.PasswordBootstrap {
-		bootstrapSvc = auth.NewBootstrap(st, wa, vault, auth.BootstrapConfig{
+		bs := auth.NewBootstrap(st, wa, vault, auth.BootstrapConfig{
 			BaseURL: cfg.Redmine.BaseURL,
 			SubURI:  cfg.Redmine.SubURI,
 			Timeout: time.Duration(cfg.Redmine.TimeoutSeconds) * time.Second,
 		})
+		bootstrapSvc = bs
+		relinkSvc = bs
 	}
 
 	apiMux := http.NewServeMux()
@@ -166,13 +169,15 @@ func run(out io.Writer, args []string) error {
 		httpapi.WriteError(w, httpapi.CodeNotFound, "no such endpoint")
 	})
 	(&httpapi.AuthHandler{
-		WebAuthn:   wa,
-		Sessions:   sessions,
-		Users:      st,
-		Limiter:    auth.NewRateLimiter(5, 60*time.Second),
-		Bootstrap:  bootstrapSvc,
-		Enrollment: auth.NewEnrollment(st, wa),
-		CookieName: cfg.Session.CookieName,
+		WebAuthn:    wa,
+		Sessions:    sessions,
+		Users:       st,
+		Credentials: st,
+		Limiter:     auth.NewRateLimiter(5, 60*time.Second),
+		Bootstrap:   bootstrapSvc,
+		Enrollment:  auth.NewEnrollment(st, wa),
+		Relink:      relinkSvc,
+		CookieName:  cfg.Session.CookieName,
 	}).RegisterRoutes(apiMux)
 	(&httpapi.DeviceHandler{Devices: st}).RegisterRoutes(apiMux)
 

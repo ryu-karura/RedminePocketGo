@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"time"
 	"testing"
+	"time"
 )
 
 type fakeWebAuthn struct {
@@ -305,6 +305,64 @@ func TestEnrollmentEndpoints(t *testing.T) {
 			t.Errorf("status = %d body = %s", rec.Code, rec.Body)
 		}
 	})
+}
+
+type fakeRelink struct{ err error }
+
+func (f *fakeRelink) Relink(context.Context, string, string, string) error { return f.err }
+
+func TestRelinkEndpoint(t *testing.T) {
+	newMux := func(svc RelinkService, lim Limiter) *http.ServeMux {
+		mux := http.NewServeMux()
+		(&AuthHandler{WebAuthn: &fakeWebAuthn{}, Sessions: &fakeSessions{},
+			Relink: svc, Limiter: lim, CookieName: "rmapp_session"}).RegisterRoutes(mux)
+		return mux
+	}
+	post := func(mux *http.ServeMux, authed bool, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/api/auth/relink", strings.NewReader(body))
+		if authed {
+			req = authedCtx(req)
+		}
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+	valid := `{"login":"alice","password":"secret"}`
+
+	tests := []struct {
+		name       string
+		service    RelinkService
+		limiter    *fakeLimiter
+		authed     bool
+		body       string
+		wantStatus int
+		wantBody   string
+	}{
+		{"disabled is 404", nil, nil, true, valid, 404, CodeNotFound},
+		{"unauthenticated", &fakeRelink{}, nil, false, valid, 401, CodeUnauthenticated},
+		{"malformed body", &fakeRelink{}, nil, true, "{", 400, CodeInvalidRequest},
+		{"missing password", &fakeRelink{}, nil, true, `{"login":"alice"}`, 400, CodeInvalidRequest},
+		{"bad credentials", &fakeRelink{err: fmt.Errorf("%w: no", ErrUnauthenticated)},
+			&fakeLimiter{allow: true}, true, valid, 401, CodeUnauthenticated},
+		{"upstream down", &fakeRelink{err: fmt.Errorf("%w: 503", ErrUpstream)},
+			&fakeLimiter{allow: true}, true, valid, 502, CodeUpstreamError},
+		{"rate limited", &fakeRelink{}, &fakeLimiter{allow: false}, true, valid, 429, CodeRateLimited},
+		{"success", &fakeRelink{}, &fakeLimiter{allow: true}, true, valid, 200, `"relinked":true`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := post(newMux(tt.service, limOrNil(tt.limiter)), tt.authed, tt.body)
+			if rec.Code != tt.wantStatus || !strings.Contains(rec.Body.String(), tt.wantBody) {
+				t.Errorf("status = %d body = %s; want %d containing %q", rec.Code, rec.Body, tt.wantStatus, tt.wantBody)
+			}
+			if tt.name == "bad credentials" && tt.limiter.fails != 1 {
+				t.Errorf("limiter fails = %d; want 1", tt.limiter.fails)
+			}
+			if tt.name == "success" && tt.limiter.successes != 1 {
+				t.Errorf("limiter successes = %d; want 1", tt.limiter.successes)
+			}
+		})
+	}
 }
 
 func TestLimiterKeyUsesForwardedFor(t *testing.T) {

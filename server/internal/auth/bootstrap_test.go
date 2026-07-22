@@ -138,3 +138,75 @@ func TestBootstrapMalformedUpstreamBody(t *testing.T) {
 		t.Fatalf("err = %v; want ErrUpstream for missing fields", err)
 	}
 }
+
+func TestRelinkSuccessSavesNewAPIKey(t *testing.T) {
+	srv := fakeRedmine(t, 200, accountJSON)
+	b, st, vault := newBootstrap(t, srv.URL)
+	ctx := context.Background()
+	if _, _, err := b.Run(ctx, "alice", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	u, err := st.GetUserByLogin(ctx, "alice")
+	if err != nil || u == nil {
+		t.Fatalf("setup: %v, %v", u, err)
+	}
+	vault.saved[u.ID] = "" // 失効させた状態を模す
+
+	if err := b.Relink(ctx, u.ID, "alice", "secret"); err != nil {
+		t.Fatalf("Relink: %v", err)
+	}
+	if vault.saved[u.ID] != "redmine-key-1" {
+		t.Errorf("api key not refreshed: %v", vault.saved)
+	}
+}
+
+func TestRelinkRejectsDifferentRedmineAccount(t *testing.T) {
+	// 上流は login=alice のアカウントを返すが、対象ユーザーは bob。
+	srv := fakeRedmine(t, 200, accountJSON)
+	b, st, vault := newBootstrap(t, srv.URL)
+	ctx := context.Background()
+	bob := &store.User{ID: "u-bob", RedmineLogin: "bob", WebAuthnUserHandle: []byte("x")}
+	if err := st.CreateUser(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+
+	err := b.Relink(ctx, bob.ID, "alice", "secret")
+	if !errors.Is(err, ErrBadCredentials) {
+		t.Fatalf("err = %v; want ErrBadCredentials (login mismatch)", err)
+	}
+	if len(vault.saved) != 0 {
+		t.Error("vault touched despite login mismatch")
+	}
+}
+
+func TestRelinkBadCredentials(t *testing.T) {
+	srv := fakeRedmine(t, 200, accountJSON)
+	b, st, vault := newBootstrap(t, srv.URL)
+	ctx := context.Background()
+	if _, _, err := b.Run(ctx, "alice", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := st.GetUserByLogin(ctx, "alice")
+
+	if err := b.Relink(ctx, u.ID, "alice", "wrong-password"); !errors.Is(err, ErrBadCredentials) {
+		t.Fatalf("err = %v; want ErrBadCredentials", err)
+	}
+	if vault.saved[u.ID] == "" {
+		// setup 済みの値のまま変わっていないことを確認（上書きされていない）
+	} else if vault.saved[u.ID] != "redmine-key-1" {
+		t.Errorf("vault mutated on bad credentials: %v", vault.saved)
+	}
+}
+
+func TestRelinkUpstreamFailure(t *testing.T) {
+	srv := fakeRedmine(t, 503, "oops")
+	b, st, _ := newBootstrap(t, srv.URL)
+	ctx := context.Background()
+	u := &store.User{ID: "u1", RedmineLogin: "alice", WebAuthnUserHandle: []byte("x")}
+	if err := st.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Relink(ctx, u.ID, "alice", "secret"); !errors.Is(err, httpapi.ErrUpstream) {
+		t.Fatalf("err = %v; want ErrUpstream", err)
+	}
+}

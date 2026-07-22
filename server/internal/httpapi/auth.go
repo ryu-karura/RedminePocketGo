@@ -51,15 +51,29 @@ type EnrollmentService interface {
 	Redeem(ctx context.Context, code string) (optionsJSON []byte, challengeID string, err error)
 }
 
+// RelinkService は Redmine API キーの再紐付け（auth.Bootstrap.Relink が実装
+// する。Design.md §4.4・§7.9）。
+type RelinkService interface {
+	Relink(ctx context.Context, userID, login, password string) error
+}
+
+// CredentialStatusGetter は設定画面向けの Redmine 連携状態参照。
+// *store.Store が実装する。
+type CredentialStatusGetter interface {
+	GetRedmineCredential(ctx context.Context, userID string) (*store.RedmineCredential, error)
+}
+
 // AuthHandler は認証エンドポイント（Design.md §3.2）を提供する。
 type AuthHandler struct {
-	WebAuthn   WebAuthnService
-	Sessions   SessionService
-	Users      UserGetter
-	Limiter    Limiter
-	Bootstrap  BootstrapService // nil なら機能無効（features.passwordBootstrap）
-	Enrollment EnrollmentService
-	CookieName string
+	WebAuthn    WebAuthnService
+	Sessions    SessionService
+	Users       UserGetter
+	Credentials CredentialStatusGetter // nil なら me() の redmineStatus は常に unlinked
+	Limiter     Limiter
+	Bootstrap   BootstrapService // nil なら機能無効（features.passwordBootstrap）
+	Enrollment  EnrollmentService
+	Relink      RelinkService // nil なら 404（features.passwordBootstrap と同じ機能フラグ）
+	CookieName  string
 }
 
 // limiterKey はレート制限のキー（クライアント IP 単位）。本アプリは
@@ -92,6 +106,7 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/bootstrap", h.bootstrap)
 	mux.HandleFunc("POST /api/auth/enrollment-code", h.issueEnrollmentCode)
 	mux.HandleFunc("POST /api/auth/enroll", h.enroll)
+	mux.HandleFunc("POST /api/auth/relink", h.relink)
 }
 
 // issueEnrollmentCode はログイン済み端末から 6 桁コードを発行する
@@ -206,10 +221,25 @@ func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]string{
-		"userId":       u.ID,
-		"redmineLogin": u.RedmineLogin,
-		"displayName":  u.DisplayName,
+		"userId":        u.ID,
+		"redmineLogin":  u.RedmineLogin,
+		"displayName":   u.DisplayName,
+		"redmineStatus": h.redmineStatus(r.Context(), u.ID),
 	})
+}
+
+// redmineStatus は設定画面向けの Redmine 連携状態（"active" / "invalid" /
+// "unlinked"）。参照に失敗しても me() 全体は失敗させず unlinked 扱いにする
+// （連携状態はあくまで表示用の付随情報のため）。
+func (h *AuthHandler) redmineStatus(ctx context.Context, userID string) string {
+	if h.Credentials == nil {
+		return "unlinked"
+	}
+	rc, err := h.Credentials.GetRedmineCredential(ctx, userID)
+	if err != nil || rc == nil {
+		return "unlinked"
+	}
+	return rc.Status
 }
 
 // logout はセッションを破棄する。Cookie が無くても冪等に成功する。
@@ -222,6 +252,51 @@ func (h *AuthHandler) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, h.Sessions.ClearCookie())
 	WriteJSON(w, http.StatusOK, map[string]bool{"loggedOut": true})
+}
+
+// relink はログイン済み利用者が Redmine の認証情報を再入力し、無効化された
+// API キーを差し替える（Design.md §4.4・§7.9）。同じ機能フラグ
+// （features.passwordBootstrap）で有効・無効を切り替える。
+func (h *AuthHandler) relink(w http.ResponseWriter, r *http.Request) {
+	if h.Relink == nil {
+		WriteError(w, CodeNotFound, "relink is disabled")
+		return
+	}
+	sess := SessionFrom(r.Context())
+	if sess == nil {
+		WriteError(w, CodeUnauthenticated, "login required")
+		return
+	}
+	var body struct {
+		Login    string `json:"login"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Login == "" || body.Password == "" {
+		WriteError(w, CodeInvalidRequest, "login and password are required")
+		return
+	}
+	key := "relink:" + limiterKey(r)
+	if h.Limiter != nil && !h.Limiter.Allow(key) {
+		WriteError(w, CodeRateLimited, "too many failed attempts")
+		return
+	}
+	err := h.Relink.Relink(r.Context(), sess.UserID, body.Login, body.Password)
+	switch {
+	case err == nil:
+		if h.Limiter != nil {
+			h.Limiter.Succeed(key)
+		}
+		WriteJSON(w, http.StatusOK, map[string]bool{"relinked": true})
+	case errors.Is(err, ErrUnauthenticated):
+		if h.Limiter != nil {
+			h.Limiter.Fail(key)
+		}
+		WriteError(w, CodeUnauthenticated, "redmine authentication failed")
+	case errors.Is(err, ErrUpstream):
+		WriteError(w, CodeUpstreamError, "redmine is unavailable")
+	default:
+		WriteError(w, CodeInternalError, "relink failed")
+	}
 }
 
 // ceremonyResponse は begin 系の共通レスポンス。options はそのまま

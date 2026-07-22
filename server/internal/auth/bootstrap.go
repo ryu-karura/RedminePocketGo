@@ -65,19 +65,18 @@ type redmineAccount struct {
 	} `json:"user"`
 }
 
-// Run はブートストラップを実行し、登録セレモニーの開始情報を返す。
-// 不存在ユーザーでも Redmine への問い合わせを必ず行うため、処理時間で
-// ユーザーの存在は判別できない（Design.md §3.1）。
-func (b *Bootstrap) Run(ctx context.Context, login, password string) (optionsJSON []byte, challengeID string, err error) {
+// verifyAccount は Redmine の Basic 認証で本人確認し、アカウント情報を返す
+// （Run・Relink の共通部分）。
+func (b *Bootstrap) verifyAccount(ctx context.Context, login, password string) (redmineAccount, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.accountURL, nil)
 	if err != nil {
-		return nil, "", fmt.Errorf("auth: リクエスト作成に失敗しました: %w", err)
+		return redmineAccount{}, fmt.Errorf("auth: リクエスト作成に失敗しました: %w", err)
 	}
 	req.SetBasicAuth(login, password)
 
 	resp, err := b.client.Do(req)
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: %w", ErrRedmineUnavailable, err)
+		return redmineAccount{}, fmt.Errorf("%w: %w", ErrRedmineUnavailable, err)
 	}
 	defer resp.Body.Close()
 
@@ -85,19 +84,52 @@ func (b *Bootstrap) Run(ctx context.Context, login, password string) (optionsJSO
 	case resp.StatusCode == http.StatusOK:
 		// 続行
 	case resp.StatusCode == http.StatusUnauthorized:
-		return nil, "", ErrBadCredentials
+		return redmineAccount{}, ErrBadCredentials
 	case resp.StatusCode >= 500:
-		return nil, "", fmt.Errorf("%w (status %d)", ErrRedmineUnavailable, resp.StatusCode)
+		return redmineAccount{}, fmt.Errorf("%w (status %d)", ErrRedmineUnavailable, resp.StatusCode)
 	default:
-		return nil, "", fmt.Errorf("%w (unexpected status %d)", ErrRedmineUnavailable, resp.StatusCode)
+		return redmineAccount{}, fmt.Errorf("%w (unexpected status %d)", ErrRedmineUnavailable, resp.StatusCode)
 	}
 
 	var account redmineAccount
 	if err := json.NewDecoder(resp.Body).Decode(&account); err != nil {
-		return nil, "", fmt.Errorf("%w: レスポンスの解釈に失敗しました", ErrRedmineUnavailable)
+		return redmineAccount{}, fmt.Errorf("%w: レスポンスの解釈に失敗しました", ErrRedmineUnavailable)
 	}
 	if account.User.Login == "" || account.User.APIKey == "" {
-		return nil, "", fmt.Errorf("%w: レスポンスに必要な項目がありません", ErrRedmineUnavailable)
+		return redmineAccount{}, fmt.Errorf("%w: レスポンスに必要な項目がありません", ErrRedmineUnavailable)
+	}
+	return account, nil
+}
+
+// Relink はログイン済み利用者が Redmine の認証情報を再入力し、無効化された
+// API キーを新しいものに差し替える（Design.md §4.4 手順 3-4・§7.9）。
+// 再紐付けは同じ Redmine アカウントに対してのみ許可する（キーはユーザー単位で
+// 1 つという設計 §4.1 を守るため、別アカウントへの付け替えは扱わない）。
+func (b *Bootstrap) Relink(ctx context.Context, userID, login, password string) error {
+	account, err := b.verifyAccount(ctx, login, password)
+	if err != nil {
+		return err
+	}
+	u, err := b.store.GetUserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if u == nil {
+		return fmt.Errorf("auth: 利用者が見つかりません")
+	}
+	if u.RedmineLogin != account.User.Login {
+		return ErrBadCredentials
+	}
+	return b.vault.SaveAPIKey(ctx, userID, account.User.APIKey)
+}
+
+// Run はブートストラップを実行し、登録セレモニーの開始情報を返す。
+// 不存在ユーザーでも Redmine への問い合わせを必ず行うため、処理時間で
+// ユーザーの存在は判別できない（Design.md §3.1）。
+func (b *Bootstrap) Run(ctx context.Context, login, password string) (optionsJSON []byte, challengeID string, err error) {
+	account, err := b.verifyAccount(ctx, login, password)
+	if err != nil {
+		return nil, "", err
 	}
 
 	u, err := b.store.GetUserByLogin(ctx, account.User.Login)
