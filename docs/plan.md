@@ -206,8 +206,8 @@
       往復 1 件。CLAUDE.md §5。往復確認は `server/stacktest`（build tag
       `stack`）を呼び出す。実 RedmineDocker への到達が前提のため、通常の
       test-unit/test-api/CI には含めない）
-- [ ] `scripts/backup.sh` / `scripts/restore.sh`（SQLite と secrets、
-      restore は確認リテラル必須）
+- [x] `scripts/backup.sh` / `scripts/restore.sh`（SQLite と secrets、
+      restore は確認リテラル必須。対象・保持世代数は docs/Manual.md §4.1）
 - [ ] ドキュメント同期の最終確認（Design.md / Setup.md / Manual.md /
       README.md が実装と一致しているか。`docs-sync` の観点）
 

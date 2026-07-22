@@ -5,6 +5,9 @@ secrets/
 data/
 server/data/
 
+# scripts/backup.sh の出力（鍵を含むため厳禁）
+backups/
+
 # ビルド成果物
 server/bin/
 
