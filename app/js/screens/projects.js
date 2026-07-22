@@ -32,10 +32,20 @@ export async function initProjects(section) {
 
   function showEmpty(isSearch) {
     destroy();
-    const msg = isSearch
-      ? '一致するプロジェクトがありません。'
-      : '表示できるプロジェクトがありません。Redmine 側でプロジェクトが作成されると、ここに表示されます。';
-    body.innerHTML = `<div class="state-empty">${escapeHtml(msg)}</div>`;
+    if (isSearch) {
+      body.innerHTML = `<div class="state-empty">`
+        + `<p>一致するプロジェクトがありません。</p>`
+        + `<button type="button" class="btn-link" id="projectsClearSearch">検索をクリア</button>`
+        + `</div>`;
+      body.querySelector('#projectsClearSearch').addEventListener('click', () => {
+        search.value = '';
+        render();
+      });
+      return;
+    }
+    body.innerHTML = `<div class="state-empty">`
+      + `<p>表示できるプロジェクトがありません。Redmine 側でプロジェクトが作成されると、ここに表示されます。</p>`
+      + `</div>`;
   }
 
   function showError(msg) {

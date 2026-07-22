@@ -32,8 +32,27 @@ import (
 //
 // subURI="" のため、上流パスにサブ URI は付かない。未対応パスは 404 にして
 // 経路の取り違えを検知する。
-func fakeRedmine(t *testing.T) *httptest.Server {
+// upstreamState is the mutable knobs the test flips at runtime.
+type upstreamState struct {
+	mu                sync.Mutex
+	credentialInvalid bool // true にすると /projects.json が常に 401 を返す
+}
+
+func (s *upstreamState) setCredentialInvalid(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.credentialInvalid = v
+}
+
+func (s *upstreamState) isCredentialInvalid() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.credentialInvalid
+}
+
+func fakeRedmine(t *testing.T) (*httptest.Server, *upstreamState) {
 	t.Helper()
+	state := &upstreamState{}
 	// チケット 101 の状態はインライン編集で書き換わる（PUT を保持し GET に反映）。
 	var mu sync.Mutex
 	statusID, statusName := 2, "進行中"
@@ -50,7 +69,7 @@ func fakeRedmine(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 個別チケット（詳細取得 / インライン更新）。/issues/{id}.json。
 		if strings.HasPrefix(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, ".json") {
-			if r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
+			if state.isCredentialInvalid() || r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -108,7 +127,7 @@ func fakeRedmine(t *testing.T) *httptest.Server {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"user":{"login":"alice","firstname":"Alice","lastname":"Doe","api_key":"e2e-key"}}`)
 		case "/projects.json":
-			if r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
+			if state.isCredentialInvalid() || r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -189,7 +208,7 @@ func fakeRedmine(t *testing.T) *httptest.Server {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, state
 }
 
 func chromePath(t *testing.T) string {
@@ -206,7 +225,7 @@ func chromePath(t *testing.T) string {
 }
 
 func TestLoginBootstrapRegisterFlow(t *testing.T) {
-	redmine := fakeRedmine(t)
+	redmine, upstream := fakeRedmine(t)
 
 	// rmapp をポート 18099 で起動（app/ を配信）。RP ID は localhost。
 	srv := startRmapp(t, redmine.URL)
@@ -340,6 +359,17 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 				`&& s.indexOf('12')>=0 && s.indexOf('8')>=0;})()`,
 			nil, chromedp.WithPollingTimeout(20*time.Second)),
 		shot("04-projects.png"),
+		// ツリーのアクセシビリティ属性を実 DOM で確認する（CLAUDE.md §3.4）:
+		// コンテナは role=tree（Tabulator が role=grid で上書きするのを戻す）、
+		// ルート行は role=treeitem・aria-level=1・aria-expanded を持つ。
+		chromedp.Poll(
+			`(function(){var c=document.querySelector('.screen.active #projectsTree');`+
+				`if(!c||c.getAttribute('role')!=='tree')return false;`+
+				`var rows=c.querySelectorAll('.tabulator-row');`+
+				`var root=null;rows.forEach(function(r){if(r.innerText.indexOf('基幹システム')>=0)root=r;});`+
+				`return !!root && root.getAttribute('role')==='treeitem' `+
+				`&& root.getAttribute('aria-level')==='1' && root.hasAttribute('aria-expanded');})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
 		// 検索で「会計」に絞り込む: 子の会計モジュールが見え（祖先が自動展開）、
 		// 一致しない社内インフラは消える。
 		chromedp.SendKeys(`.screen.active #projectSearch`, "会計", chromedp.ByQuery),
@@ -349,6 +379,14 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 				`&& s.indexOf('社内インフラ')<0;})()`,
 			nil, chromedp.WithPollingTimeout(20*time.Second)),
 		shot("05-projects-search.png"),
+		// 自動展開で見えている子行（会計モジュール）の階層が aria-level=2 になる
+		// ことを確認する。
+		chromedp.Poll(
+			`(function(){var c=document.querySelector('.screen.active #projectsTree');if(!c)return false;`+
+				`var rows=c.querySelectorAll('.tabulator-row');var child=null;`+
+				`rows.forEach(function(r){if(r.innerText.indexOf('会計モジュール')>=0)child=r;});`+
+				`return !!child && child.getAttribute('role')==='treeitem' && child.getAttribute('aria-level')==='2';})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
 	)
 	if err != nil {
 		t.Fatalf("projects screen flow: %v", err)
@@ -374,6 +412,15 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 				`return !!t && t.innerText.indexOf('締め処理')>=0;})()`,
 			nil, chromedp.WithPollingTimeout(20*time.Second)),
 		shot("07-issues-all.png"),
+		// empty: 該当チケットが 1 件もない優先度（低=id3）で絞り込むと、説明文
+		// と「フィルタをクリア」導線が出る（Design.md §7.10）。
+		chromedp.Evaluate(
+			`(function(){var s=document.querySelector('.screen.active #issuePriorityFilter');`+
+				`s.value='3';s.dispatchEvent(new Event('change'));})()`, nil),
+		chromedp.WaitVisible(`.screen.active #issuesClearFilters`, chromedp.ByQuery),
+		shot("07b-issues-empty.png"),
+		chromedp.Click(`.screen.active #issuesClearFilters`, chromedp.ByQuery),
+		chromedp.WaitVisible(`.screen.active #issuesTree`, chromedp.ByQuery),
 	)
 	if err != nil {
 		t.Fatalf("issues screen flow: %v", err)
@@ -443,6 +490,65 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("settings screen flow: %v", err)
+	}
+
+	// error+retry と redmine_credential_invalid → 再紐付けの導線（Design.md
+	// §4.4・§7.10、フェーズ 6 完了条件）: 上流を 401 に切り替えてチケット詳細を
+	// 開くと（集約はキャッシュしないので必ず上流へ問い合わせる。§6.6）、
+	// キーが無効化され error+retry 状態が出る。設定画面では「要再連携」に
+	// 変わり、認証情報を再入力すると連携済みに戻る。
+	upstream.setCredentialInvalid(true)
+	err = chromedp.Run(ctx,
+		chromedp.Navigate(base+"/#issue-detail/101"),
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active .state-error');`+
+				`return !!t && t.innerText.indexOf('再度連携')>=0 && !!t.querySelector('button');})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("14-issue-detail-error-invalid.png"),
+	)
+	if err != nil {
+		t.Fatalf("credential-invalid error state: %v", err)
+	}
+
+	err = chromedp.Run(ctx,
+		chromedp.Navigate(base+"/#settings"),
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active');`+
+				`return !!t && t.innerText.indexOf('要再連携')>=0;})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("15-settings-relink-needed.png"),
+		chromedp.Click(`.screen.active #relinkToggle`, chromedp.ByQuery),
+		chromedp.WaitVisible(`.screen.active #relinkForm`, chromedp.ByQuery),
+		chromedp.SendKeys(`.screen.active #relinkLogin`, "alice", chromedp.ByQuery),
+		chromedp.SendKeys(`.screen.active #relinkPassword`, "secret", chromedp.ByQuery),
+		// 直前の操作で出た通知トーストが画面下寄りに残っていると、固定位置の
+		// トーストが送信ボタンの実クリック座標を覆ってクリックを奪うことがある
+		// ため、送信前に消しておく（実利用では 4 秒の自動消去を待てば起きない）。
+		chromedp.Evaluate(`document.querySelectorAll('#toasts .toast').forEach(function(t){t.remove();})`, nil),
+		chromedp.Click(`.screen.active #relinkSubmit`, chromedp.ByQuery),
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active');`+
+				`return !!t && t.innerText.indexOf('連携済み')>=0;})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("16-settings-relinked.png"),
+	)
+	if err != nil {
+		t.Fatalf("relink flow: %v", err)
+	}
+
+	// 復旧確認: 直前まで失敗していたチケット詳細が再び populated に戻ることを
+	// 確認する（同じ経路で再紐付けの効果を検証する）。
+	upstream.setCredentialInvalid(false)
+	err = chromedp.Run(ctx,
+		chromedp.Navigate(base+"/#issue-detail/101"),
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active .issue-detail');`+
+				`return !!t && t.innerText.indexOf('帳票出力の刷新')>=0;})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("17-issue-detail-recovered.png"),
+	)
+	if err != nil {
+		t.Fatalf("post-relink recovery: %v", err)
 	}
 }
 

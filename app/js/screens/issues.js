@@ -43,10 +43,21 @@ export async function initIssues(section, params) {
 
   function showEmpty(filtered) {
     destroy();
-    const msg = filtered
-      ? '条件に一致するチケットがありません。'
-      : 'このプロジェクトにはチケットがありません。';
-    body.innerHTML = `<div class="state-empty">${escapeHtml(msg)}</div>`;
+    if (filtered) {
+      body.innerHTML = `<div class="state-empty">`
+        + `<p>条件に一致するチケットがありません。</p>`
+        + `<button type="button" class="btn-link" id="issuesClearFilters">フィルタをクリア</button>`
+        + `</div>`;
+      body.querySelector('#issuesClearFilters').addEventListener('click', () => {
+        statusSel.value = 'open';
+        assigneeSel.value = '';
+        prioritySel.value = '';
+        render();
+      });
+      return;
+    }
+    body.innerHTML = '<div class="state-empty"><p>このプロジェクトにはチケットがありません。'
+      + '右下の＋ボタンから作成できます。</p></div>';
   }
 
   function showError(msg) {
