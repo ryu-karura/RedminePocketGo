@@ -208,8 +208,9 @@
       test-unit/test-api/CI には含めない）
 - [x] `scripts/backup.sh` / `scripts/restore.sh`（SQLite と secrets、
       restore は確認リテラル必須。対象・保持世代数は docs/Manual.md §4.1）
-- [ ] ドキュメント同期の最終確認（Design.md / Setup.md / Manual.md /
-      README.md が実装と一致しているか。`docs-sync` の観点）
+- [x] ドキュメント同期の最終確認（Design.md / Setup.md / Manual.md /
+      README.md が実装と一致しているか。`docs-sync` の観点。監査の詳細は
+      自動実行ログ参照）
 
 完了条件: RedmineDocker 開発スタックを起動した状態で
 `scripts/test-stack.sh` 緑。`shellcheck scripts/*.sh` 通過。

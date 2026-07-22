@@ -38,7 +38,7 @@ sudo systemctl status rmapp
 
 ```bash
 cd server
-./bin/rmapp serve -config config/config.yaml
+./bin/rmapp -config config/config.yaml
 ```
 
 停止は `Ctrl+C` です。処理中のリクエストを待ってから終了します
@@ -98,18 +98,16 @@ sudo cp /opt/rmapp/config/config.yaml /opt/rmapp/config/config.yaml.bak
 # 2. 編集する
 sudo vi /opt/rmapp/config/config.yaml
 
-# 3. 内容を検証する（起動はしません）
-/opt/rmapp/bin/rmapp validate -config /opt/rmapp/config/config.yaml
-
-# 4. 反映する
+# 3. 反映する（設定は起動時に検証される。別途の検証専用コマンドはない）
 sudo systemctl restart rmapp
 
-# 5. 起動を確認する
+# 4. 起動を確認する
 sudo systemctl status rmapp
+sudo journalctl -u rmapp -n 50
 ```
 
-`validate` が失敗した場合は、問題のあるキー名が表示されます。その状態で
-再起動すると起動に失敗するので、必ず先に検証してください。
+設定に不備があると起動に失敗し、ログに問題のあるキー名が表示されます。
+その場合は 1. で控えた設定に戻して再起動してください。
 
 ### 2.3 変更してはいけない項目
 
@@ -159,18 +157,27 @@ Redmine 側のログは RedmineDocker の `docs/Manual.md` の手順で確認し
 
 ### 3.2 読み方
 
-ログは JSON で出力されます。主なフィールドは次のとおりです。
+ログは JSON で出力されます。すべての行に共通するフィールドは次のとおりです。
 
 | フィールド | 内容 |
 |---|---|
 | `time` | 発生時刻 |
 | `level` | `DEBUG` / `INFO` / `WARN` / `ERROR` |
 | `msg` | 内容 |
-| `request_id` | リクエストの識別子。1 つの処理を追跡できる |
-| `user_id` | 利用者の識別子 |
+
+リクエスト 1 件ごとに必ず 1 行出る `"msg":"access"`（`INFO`）には、これに
+加えて次のフィールドがあります。
+
+| フィールド | 内容 |
+|---|---|
+| `method` | HTTP メソッド |
 | `path` | リクエストのパス |
 | `status` | 応答したステータスコード |
 | `duration_ms` | 処理時間 |
+| `request_id` | リクエストの識別子。1 つの処理を追跡できる |
+
+その他の行（起動・異常系）は個々に異なるフィールドを持ちます。詳細は
+3.4 を参照してください。
 
 特定のリクエストを追う場合は `request_id` で絞り込みます。
 
@@ -190,12 +197,22 @@ sudo journalctl -u rmapp | grep '"request_id":"abc123"'
 
 ### 3.4 注意して見るべきログ
 
-| メッセージ | 意味 | 対応 |
+許可リスト判定・レート制限・中継のエラー写像自体は専用ログを出さず、
+`"access"` 行の `status` に結果が表れます。あわせて次の `ERROR` レベルの
+行が出ることがあります。
+
+| `status`（access 行） | 意味 | 対応 |
 |---|---|---|
-| `upstream error` | Redmine が応答しない | Redmine スタックの状態を確認 |
-| `credential marked invalid` | API キーが無効化された | 利用者に再紐付けを案内 |
-| `allowlist rejected` | 許可されていないパスへのアクセス | 頻発するなら調査 |
-| `rate limited` | ログイン試行の上限に到達 | 攻撃か操作ミスかを判断 |
+| `429` | ログイン・登録コードの試行回数上限に到達（レート制限） | 攻撃か操作ミスかを判断 |
+| `409`（`/api/redmine/`・集約系のパス） | Redmine の API キーが無効化された。再紐付けが必要 | 利用者に再紐付けを案内 |
+| `404`（`/api/redmine/` 配下） | 許可リストにないパスへのアクセス | 頻発するなら調査 |
+| `502` | Redmine が応答しない | Redmine スタックの状態を確認 |
+
+| `msg`（ERROR 行） | 意味 | 対応 |
+|---|---|---|
+| `panic recovered` | ハンドラでパニックが発生し復旧した | 再現手順を控えて調査 |
+| `session resolution failed` | セッションストア（SQLite）の異常 | サーバー・ディスクの状態を確認 |
+| `api key load failed` / `mark credential invalid failed` / `aggregate upstream failed` | API キー保管庫または Redmine 呼び出しの内部エラー（`user_id` フィールドあり） | サーバー・Redmine スタックの状態を確認 |
 
 ---
 
@@ -216,39 +233,47 @@ Redmine スタックのバックアップ（DB・添付ファイル）は Redmin
 
 ### 4.2 手順
 
-`scripts/backup.sh` に一括処理をまとめてあります。手動の場合は次のとおり
-です。
+`scripts/backup.sh` が鍵・設定・データベースを 1 つの tar.gz にまとめ、
+7 世代を自動で保持します。既定は開発環境のレイアウト（このリポジトリ配下の
+`secrets/` / `server/config/` / `server/data/rmapp.db`）を対象にするため、
+本番（`/opt/rmapp/...`、`/var/lib/rmapp/rmapp.db`）では環境変数でパスを
+指定します。**スクリプト自身はサービスを止めません**（実行中でも安全に
+使えるよう意図しています）。書き込み中の SQLite ファイルを厳密に一貫した
+状態で取りたい場合は、先に `systemctl stop rmapp` してから実行してください。
 
 ```bash
-# 鍵と設定（変更したときだけ取り直す）
-sudo tar czf rmapp-secrets-$(date +%Y%m%d).tar.gz \
-    -C /opt/rmapp secrets config
-
-# データベース（SQLite）
-sudo systemctl stop rmapp
-sudo cp /var/lib/rmapp/rmapp.db /backup/rmapp-$(date +%Y%m%d).db
-sudo systemctl start rmapp
+sudo RMAPP_SECRETS_DIR=/opt/rmapp/secrets \
+     RMAPP_CONFIG_DIR=/opt/rmapp/config \
+     RMAPP_DB_PATH=/var/lib/rmapp/rmapp.db \
+     RMAPP_BACKUP_DIR=/backup/rmapp \
+     bash scripts/backup.sh
 ```
 
 ### 4.3 復元
+
+`scripts/restore.sh` に同じ環境変数を渡します。確認語 `RESTORE` の入力を
+求められます。
 
 ```bash
 # 1. サービスを止める
 sudo systemctl stop rmapp
 
-# 2. 鍵と設定を戻す
-sudo tar xzf rmapp-secrets-20260719.tar.gz -C /opt/rmapp
+# 2. 復元する（アーカイブは backup.sh が作った tar.gz）
+sudo RMAPP_SECRETS_DIR=/opt/rmapp/secrets \
+     RMAPP_CONFIG_DIR=/opt/rmapp/config \
+     RMAPP_DB_PATH=/var/lib/rmapp/rmapp.db \
+     bash scripts/restore.sh /backup/rmapp/rmapp-backup-20260719-090000.tar.gz
 
-# 3. データベースを戻す
-sudo cp /backup/rmapp-20260719.db /var/lib/rmapp/rmapp.db
+# 3. 所有者を戻す（必要な場合）
 sudo chown rmapp:rmapp /var/lib/rmapp/rmapp.db
 
 # 4. 起動する
 sudo systemctl start rmapp
 ```
 
-鍵とデータベースは**必ず同じ時点のものを組で戻してください。**
-食い違うと API キーが復号できなくなります。
+鍵とデータベースは**必ず同じアーカイブ（同時点）から戻してください。**
+食い違うと API キーが復号できなくなります。1 回の `backup.sh` 実行が
+鍵・設定・データベースをまとめて 1 つのアーカイブに収めるのはこのためです。
 
 ---
 
@@ -265,19 +290,18 @@ git pull
 cd server && make build && cd ..
 shellcheck scripts/*.sh
 
-# 4. データベースを更新する
-/opt/rmapp/bin/rmapp migrate -config /opt/rmapp/config/config.yaml
-
-# 5. 再起動する
+# 4. 再起動する（データベースは起動時に自動で更新される）
 sudo systemctl restart rmapp
 
-# 6. 動作を確認する
+# 5. 動作を確認する
 curl -i https://ドメイン/healthz
-bash scripts/test-stack.sh    # 開発環境なら統合テストも実行できる
+curl -i https://ドメイン/readyz
+RMAPP_STACK_API_KEY=xxxx bash scripts/test-stack.sh    # 開発環境なら統合テストも実行できる
 ```
 
-`migrate` は何度実行しても安全です。フロントエンド（`app/`）の変更は
-ビルド不要で、ファイル配置の更新と再起動だけで反映されます。
+データベースの更新（マイグレーション）は起動のたびに自動で行われ、何度
+実行されても安全です。フロントエンド（`app/`）の変更はビルド不要で、
+ファイル配置の更新と再起動だけで反映されます。
 
 Redmine スタック側のアップグレードは RedmineDocker の手順に従ってください
 （プラグインはイメージ焼き込みのため、Containerfile の編集と再ビルドです）。
@@ -313,11 +337,11 @@ Redmine スタック側のアップグレードは RedmineDocker の手順に従
 3. 代わりの端末を登録してもらう
 ```
 
-登録済み端末が他にない場合は、回復コードを使ってログインします。
-回復コードも失っている場合は、Redmine の認証情報による再紐付けが最後の
-手段です。この経路を無効にしている場合
-（`features.passwordBootstrap: false`）、運用担当者が一時的に有効化して
-再登録を案内する必要があります。
+登録済み端末が他にない場合、現時点では回復コードのような自己解決手段は
+ありません。ログイン画面で「Redmine の情報でログイン」を選び、Redmine の
+認証情報で再紐付けしてもらうのが唯一の手段です。この経路を無効にしている
+場合（`features.passwordBootstrap: false`）、運用担当者が一時的に有効化
+して再登録を案内する必要があります。
 
 ### 6.3 「Redmine との連携が切れました」と表示される
 
@@ -370,7 +394,10 @@ Redmine 側で API キーが再生成されると発生します。
 | `scripts/backup.sh` | 鍵・設定・データベースを一括バックアップ（7 世代保持） |
 | `scripts/restore.sh` | 復元。確認語 `RESTORE` の入力必須 |
 | `scripts/test-stack.sh` | 起動中の Redmine 開発スタックに対する統合テスト |
-| `scripts/healthcheck.sh` | 稼働確認。監視から呼ぶ想定 |
+
+稼働確認を監視から呼ぶ場合は専用スクリプトではなく、HTTP エンドポイント
+`GET /healthz`（自身の応答）・`GET /readyz`（Redmine への到達性）を直接
+呼んでください（Design.md §6.7、Setup.md §11）。
 
 いずれも、引数なしで実行すると使い方が表示されます。
 
@@ -404,14 +431,14 @@ Redmine スタック側のヘルスチェックはコンテナに定義済みで
 3. Redmine のログイン名とパスワードを入力します
 4. パスキーの登録を求められるので、端末の指紋認証・顔認証・PIN で
    登録します
-5. 回復コードが表示されます。**印刷するか、安全な場所に保管してください**
 
 以降、パスワードの入力は不要です。
 
 ### 9.2 2 台目の端末を登録する
 
-**必ず登録してください。** 端末が 1 台だけだと、その端末をなくしたときに
-ログインできなくなります。
+**必ず登録してください。** 回復コードのような救済手段は現時点では
+ありません。端末が 1 台だけだと、その端末をなくしたときにログインできなく
+なります。
 
 1. すでに使える端末でログインします
 2. 設定（歯車）を開きます
@@ -507,7 +534,7 @@ Redmine スタック側のヘルスチェックはコンテナに定義済みで
 | 「Redmine との連携が切れました」 | 画面の案内に従って再設定してください。パスキーの登録し直しは不要です |
 | プロジェクトが 1 つも出ない | Redmine 側でプロジェクトのメンバーになっているか、管理者に確認してください |
 | 端末をなくした | 別の端末でログインし、設定画面から該当端末を削除してください |
-| 使える端末が 1 つもない | 回復コードでログインしてください。それも無い場合は管理者に連絡してください |
+| 使える端末が 1 つもない | 管理者に連絡してください（回復コードのような自己解決手段は現時点ではありません） |
 | 表示が古い | 画面を下に引っ張ると再読み込みされます |
 
 解決しない場合は、次を添えて運用担当者に連絡してください。

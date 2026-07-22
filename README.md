@@ -74,7 +74,7 @@ Redmine 本体（Redmine 6.1.3、PostgreSQL 18 + PostGIS 3.6、`redmine_gtt` を
 | 項目 | 要件 |
 |---|---|
 | Redmine | RedmineDocker スタック（Redmine 6.1.3、サブ URI `/redmine`）。REST API が有効であること |
-| Go | 1.22 以降（サーバーのビルド時のみ） |
+| Go | 1.25 以降（サーバーのビルド時のみ） |
 | ブラウザ | iOS Safari 16 以降 / Android Chrome 108 以降 |
 | 通信 | HTTPS 必須（パスキーの要件。`localhost` のみ例外） |
 
