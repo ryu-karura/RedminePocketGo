@@ -29,7 +29,7 @@
 | 3 | API キー保管庫と中継（credential / proxy） | 完了 |
 | 4 | Redmine クライアントと集約 API | 完了 |
 | 5 | フロントエンド基盤とログイン画面 | 完了 |
-| 6 | 業務画面（projects / issues / issue-detail / settings） | 進行中 |
+| 6 | 業務画面（projects / issues / issue-detail / settings） | 完了 |
 | 7 | 端末紛失対策とセキュリティ強化 | 未着手 |
 | 8 | 統合テストと運用スクリプト | 未着手 |
 | — | 地図表示（Design.md §12） | 指示があるまで着手しない |
@@ -230,6 +230,7 @@
 | 2026-07-21 22:07 | 6 | 3/6（進行中） | issues 画面 + issuefmt 純粋関数 + E2E | チケット一覧を実装（Design.md §7.7）。Tabulator dataTree の 1 行 2 段組（番号+件名／状態・優先度・担当バッジ）、状態・担当・優先度フィルタ、完了は既定で畳み「完了 N 件」を告知、行タップで詳細へ、作成 FAB（モーダルは次タスクのためプレースホルダ）。純粋関数モジュール `issuefmt`（assigneeLabel / countClosed / pruneIssues / filterOpen / issueBadges / matchIssue）をテストファーストで追加（node 26 件緑）。優先度バッジ CSS を追加。E2E を拡張し擬似上流に issues ツリー・メタを追加、バッジ描画・完了畳み・状態フィルタ展開を実機検証（make test-e2e 緑）。全スイート緑（node/unit/api/build/e2e）。フェーズ 6 継続（issue-detail / モーダル / settings / 4 状態・a11y が残り）。失敗なし |
 | 2026-07-21 16:07 | 6 | 2/6（進行中） | openIssues 集約（client/aggregate）+ projects 件数列 + E2E | プロジェクト別 未完了チケット数を実装。redmine.Client.CountOpenIssues（`/issues.json?project_id&status_id=open&subproject_id=!*&limit=1` の total_count）をテストファーストで追加、集約ハンドラが projects/tree の各ノードに `openIssues` を後付け（キー単位で並行取得、上流 401 のみ伝播しその他障害は件数欠測でツリー描画継続）。ProjectNode に `*int openIssues,omitempty`。画面は右端に件数列を追加。E2E の擬似上流に `/issues.json` を追加し件数（基幹=12/社内=8）の描画を実機検証。全スイート緑（node 20 / unit / api / build / e2e）。フェーズ 6 継続（issues / issue-detail / モーダル / settings / 4 状態・a11y が残り）。失敗なし |
 | 2026-07-21 10:07 | 6 | 1/6（進行中） | projects 画面 + tree.expandedIdsFor + E2E + app.js 競合修正 | フェーズ 6 に着手。`projects` 画面を実装（dataTree 描画・開閉状態の localStorage 保存・検索時の祖先自動展開・行タップで issues へ・4 状態）。純粋関数 `expandedIdsFor` を追加し単体テスト（node 20 件緑）。E2E を拡張し、集約 API からのツリー描画と検索絞り込みを実機検証（make test-e2e 緑）。E2E で app.js の画面フラグメント二重生成バグ（`loadFragment` の未解決キャッシュ競合）を発見し修正、LESSONS #3・#4 追記。「未完了件数」はサーバー集約が必要なため独立タスクへ分離。フェーズ 6 は継続（issues / issue-detail / モーダル / settings / 4 状態・a11y が残り）。失敗なし |
+| 2026-07-22 13:12 | 6 | 6/6（完了） | e2b2c40c〜720ab16（レビュー修正2＋タスク3件＋品質ゲート） | PR #3 を継続。まずレビューコメント3件に対応（enroll.go のコード発行リトライがエラー原因を握りつぶす不具合を修正／tree.js のコメント明確化／go.mod の go ディレクティブは検証の上 1.25.0 を維持＝`go mod tidy` の正規出力と一致、スレッド上で理由を返信）。続けてフェーズ 6 残タスクを実装: (1) チケット作成モーダル（#modal-<key> ルーティングを app.js/modal.js に新設、POST /api/redmine/issues.json）。(2) settings 画面（端末一覧・削除、登録コード発行、Redmine 再紐付け=新規 POST /api/auth/relink＋GET /api/auth/me の redmineStatus、ログアウト）。(3) 全画面 4 状態・a11y 監査（Tabulator の dataTree 行に role=treeitem/aria-level/aria-expanded を付与＝Tabulator 自身が role=tree を role=grid で上書きする不具合も修正、検索/フィルタの空状態に次アクション導線を追加）。E2E をチケット作成・設定画面・error+retry・redmine_credential_invalid→再紐付け→復旧まで拡張（スクリーンショット 10-17）。LESSONS #5（isModalHash が `/` パラメータ付きハッシュを弾く）・#6（e2e で直前のトーストが固定位置のクリック座標を覆う）を追記。品質ゲート: `code-review` スキルはモデル呼び出し不可（disable-model-invocation）のため、フェーズ 6 全差分（6a9a9ad..HEAD）を 2 並列の独立レビューエージェント（サーバー側／フロント側）による発見＋自分での検証に代替。CONFIRMED 5 件修正（enrichOpenCounts がコンテキストキャンセルを1ノードの一時障害と誤扱いし60秒キャッシュへ欠測値を焼き付ける／POST /api/auth/relink のレート制限キーが認証後にも関わらず IP 単位で無関係な同一 IP 利用者を巻き添えにする／Bootstrap.Relink の store エラー未ラップ／モーダルを開いたまま画面遷移した場合に古い fetch が着地後の画面へ重なる競合／`#modal-*` ハッシュへの直接遷移＝リロード時に背景画面が無いままモーダルだけ浮く／issue-detail のコメント下書きが送信成功後も一瞬再表示され二重送信を誘発）。見送り1件（isConstraintErr が PK 衝突と FK 違反を判別できない、理由付き）。完了条件（`node --test` 緑=36件、`make test-e2e` 緑=全画面4状態＋redmine_credential_invalid→再紐付け→復旧を実機検証）を検証済み。フェーズ 6 完了 |
 
 ## 変更履歴
 
