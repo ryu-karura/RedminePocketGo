@@ -229,7 +229,7 @@
 - [x] `internal/redmine`: `ListProjectVersions`
       （`GET /projects/{id}/versions.json`）、`ListProjectMemberships`
       （`GET /projects/{id}/memberships.json`）— version/user 参照解決用
-- [ ] `internal/proxy/allowlist.go` と Design.md §6.2 に
+- [x] `internal/proxy/allowlist.go` と Design.md §6.2 に
       `GET /custom_fields.json` / `GET /projects/{id}/versions.json` を追加
 - [ ] `internal/httpapi/aggregate.go`: `/api/issues/{id}/detail` が
       カスタムフィールド値を定義と突合し、`is_required` / `possible_values`

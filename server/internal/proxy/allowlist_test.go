@@ -18,6 +18,8 @@ func TestAllowed(t *testing.T) {
 		{http.MethodPut, "/issues/100.json", true},
 		{http.MethodPost, "/issues.json", true},
 		{http.MethodGet, "/projects/7/memberships.json", true},
+		{http.MethodGet, "/projects/7/versions.json", true},
+		{http.MethodGet, "/custom_fields.json", true},
 
 		// /my/account.json は中継しない（応答に api_key を含むため。§9-1）
 		{http.MethodGet, "/my/account.json", false},
