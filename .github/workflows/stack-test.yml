@@ -40,6 +40,14 @@ on:
 permissions:
   contents: read
 
+# push と pull_request の両トリガーが同じコミットに対して起動するため
+# （同一ブランチに開いた PR がある状態での push）、二重実行を避ける。
+# 新しい push が来たら実行中の古いジョブは打ち切る（イメージビルドを
+# 含むため 1 回あたりが重く、二重・多重実行のコストが無視できない）。
+concurrency:
+  group: stack-test-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   stack:
     name: RedmineDocker 実スタックとの疎通確認
