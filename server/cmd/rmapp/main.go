@@ -211,6 +211,8 @@ func run(out io.Writer, args []string) error {
 	} else {
 		mux.Handle("/api/", apiMux)
 	}
+	// 運用監視エンドポイント（Setup.md §11）。baseURL 非対象・常にルート直下。
+	(&httpapi.HealthHandler{Upstream: rmClient}).RegisterRoutes(mux)
 	if cfg.ServeStatic {
 		mux.Handle("/", webfs.Handler(cfg.Webroot, cfg.BaseURL, cfg.NoCache))
 	}

@@ -21,7 +21,7 @@ Redmine 本体の構築は
 | ソフトウェア | バージョン | 用途 |
 |---|---|---|
 | RedmineDocker の動作環境 | 同リポジトリの要件どおり | Redmine の実行 |
-| Go | 1.22 以降 | 中継サーバーのビルド |
+| Go | 1.25 以降 | 中継サーバーのビルド |
 | Git | | ソースの取得 |
 | shellcheck | | シェルスクリプトの検証（開発時） |
 
@@ -133,12 +133,8 @@ bash scripts/generate-secrets.sh
 
 ## 5. 設定ファイルの作成
 
-```bash
-cd server
-cp config/config.example.yaml config/config.yaml
-```
-
-`config/config.yaml` を編集します（コメントは日本語で書かれています）。
+`server/config/config.yaml` は雛形として既にコミットされているので、
+そのまま編集します（コメントは日本語で書かれています）。
 各項目の意味は [Design.md](Design.md) の「10. 設定項目」を参照してください。
 
 ### 5.1 最低限変更が必要な項目
@@ -160,7 +156,7 @@ RedmineDocker 開発スタック（`localhost:8080/redmine`）と同居する構
 
 ```yaml
 listen: ":8090"
-webroot: "../../app"
+webroot: "../app"      # server/ をカレントディレクトリとして起動する前提
 serveStatic: true
 noCache: true
 logLevel: "debug"
@@ -169,7 +165,7 @@ session:
   idleTimeoutHours: 168
   absoluteTimeoutHours: 720
   secureCookie: false          # localhost の http では false
-  secretFile: "../../secrets/session_key.txt"
+  secretFile: "../secrets/session_key.txt"
 
 webauthn:
   rpId: "localhost"
@@ -178,15 +174,19 @@ webauthn:
     - "http://localhost:8090"
 
 crypto:
-  kekFile: "../../secrets/kek.txt"
+  kekFile: "../secrets/kek.txt"
 
 redmine:
   baseURL: "http://localhost:8080"
   subURI: "/redmine"           # RedmineDocker の REDMINE_SUBURI と一致させる
 
 database:
-  dsn: "file:data/rmapp.db?_fk=1"
+  dsn: "file:data/rmapp.db?_pragma=foreign_keys(1)"
 ```
+
+上記はすべて `cd server` した状態（カレントディレクトリが `server/`）で
+`./bin/rmapp` を起動する前提の相対パスです。他のディレクトリから起動する
+場合は絶対パスに置き換えてください。
 
 ### 5.3 本番環境の設定例
 
@@ -221,7 +221,7 @@ redmine:
   subURI: "/redmine"
 
 database:
-  dsn: "file:/var/lib/rmapp/rmapp.db?_fk=1"
+  dsn: "file:/var/lib/rmapp/rmapp.db?_pragma=foreign_keys(1)"
 ```
 
 ### 5.4 rpId と origins の関係
@@ -254,15 +254,15 @@ shellcheck scripts/*.sh
 
 ---
 
-## 7. データベースの初期化
+## 7. データベースの準備
 
 ```bash
 cd server
 mkdir -p data
-./bin/rmapp migrate -config config/config.yaml
 ```
 
-テーブルが作成されます。このコマンドは何度実行しても安全です。
+テーブルは `rmapp` の起動時に自動で作成・更新されます（マイグレーションは
+何度実行されても安全で、別コマンドでの事前実行は不要です）。
 
 ---
 
@@ -272,21 +272,17 @@ mkdir -p data
 
 ```bash
 cd server
-./bin/rmapp serve -config config/config.yaml
+./bin/rmapp -config config/config.yaml
 ```
 
 次のようなログが出れば起動成功です。
 
 ```
-level=INFO msg="server started" listen=:8090 rpId=localhost
+{"time":"...","level":"INFO","msg":"rmapp starting","listen":":8090","version":"dev"}
 ```
 
-起動に失敗する場合、設定の不備であればキー名がログに出力されます。
-起動前に構文だけ確かめたい場合は次を使います。
-
-```bash
-./bin/rmapp validate -config config/config.yaml
-```
+設定に不備がある場合は、起動前にキー名を示して即座に終了します
+（例: `crypto.kekFile を読めません`）。別途の検証専用コマンドはありません。
 
 ### 8.2 最初のユーザー登録
 
@@ -295,14 +291,14 @@ level=INFO msg="server started" listen=:8090 rpId=localhost
 3. Redmine のログイン名とパスワードを入力する
 4. 認証に成功すると、パスキーの登録を求められる
 5. 端末の生体認証または PIN で登録を完了する
-6. 回復コードが表示されるので、印刷または安全な場所に保管する
 
 Redmine のパスワードはこの手順の中でのみ使用され、保存されません。
 
 ### 8.3 2 台目の端末を登録する
 
-**必ず登録してください。** 端末が 1 台だけの状態でその端末を失うと、
-回復コードなしにはログインできなくなります。
+**必ず登録してください。** 回復コードのような救済手段は現時点では
+ありません。端末が 1 台だけの状態でその端末を失うと、Redmine の認証情報に
+よる再紐付け（8.1 と同じ手順）以外にログインする方法がなくなります。
 
 1. 登録済みの端末でログインする
 2. 設定画面を開く
@@ -355,7 +351,7 @@ Type=simple
 User=rmapp
 Group=rmapp
 WorkingDirectory=/opt/rmapp
-ExecStart=/opt/rmapp/bin/rmapp serve -config /opt/rmapp/config/config.yaml
+ExecStart=/opt/rmapp/bin/rmapp -config /opt/rmapp/config/config.yaml
 Restart=on-failure
 RestartSec=5s
 
@@ -385,7 +381,19 @@ sudo systemctl status rmapp
 ## 11. 構築後の確認
 
 `scripts/test-stack.sh` が、起動中の RedmineDocker 開発スタックに対して
-以下を自動で確認します。手動で確認する場合は表のとおりです。
+サーバーの起動・ヘルスチェック（`/healthz` / `/readyz`）・許可リスト経由の
+Redmine 往復 1 件を自動で確認します。
+
+```bash
+RMAPP_STACK_API_KEY="取得した API キー" scripts/test-stack.sh
+```
+
+`RMAPP_STACK_API_KEY`（3.3 で確認した API キー）は必須です。設定ファイルは
+既定で `server/config/config.yaml` を使います。別の設定を使う場合は
+`RMAPP_STACK_CONFIG` でパスを指定します。
+
+それ以外の項目（パスキー登録・ログイン、プロジェクト表示など）は
+ブラウザでの手動確認が必要です。手動で確認する場合は表のとおりです。
 
 | 確認項目 | 方法 |
 |---|---|
@@ -410,6 +418,6 @@ sudo systemctl status rmapp
 | ログインは通るがプロジェクトが空 | Redmine の REST API が有効か。そのユーザーがプロジェクトに参加しているか |
 | Redmine への接続が 404 になる | `redmine.subURI` が RedmineDocker の `REDMINE_SUBURI`（既定 `/redmine`）と一致しているか |
 | `redmine_credential_invalid` が出る | Redmine 側で API キーが再生成されていないか |
-| 起動時に設定エラーで止まる | ログに出力されたキー名を確認する。`validate` サブコマンドで事前確認できる |
+| 起動時に設定エラーで止まる | ログに出力されたキー名を確認する（起動時に自動検証される） |
 | Apache 経由で認証が失敗 | `ProxyPreserveHost On` と `X-Forwarded-Proto` が設定されているか |
 | Redmine スタック自体が不調 | RedmineDocker の `docs/Manual.md` / `scripts/test-stack.sh` で切り分ける |
