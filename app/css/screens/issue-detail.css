@@ -51,6 +51,10 @@
 .issue-desc { white-space: pre-wrap; }
 .muted { color: var(--muted); }
 
+.custom-fields .attr-list { margin: var(--space-2) 0 0; }
+.cf-multiline { white-space: pre-wrap; }
+.badge.cf-required { background: var(--warn-soft); color: var(--warn); }
+
 .attach-list, .journal-list { list-style: none; padding: 0; margin: 0; }
 .journal {
   border-top: 1px solid var(--border);

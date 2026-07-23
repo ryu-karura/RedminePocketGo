@@ -240,10 +240,9 @@
       詳細取得自体は失敗させない
 - [x] `app/js/common/customfields.js`: 12 フォーマットの表示整形を行う
       純粋関数（DOM 非依存、単体テスト可能）
-- [ ] `app/js/screens/issue-detail.js` / `app/css/screens/issue-detail.css`:
+- [x] `app/js/screens/issue-detail.js` / `app/css/screens/issue-detail.css`:
       カスタムフィールドセクションを追加（表示順どおり、必須バッジ、
-      選択肢はラベル表示、リンクはアンカー、ファイルはダウンロードリンク
-      + サイズ、複数値はカンマ区切り）
+      選択肢はラベル表示、リンクはアンカー、複数値は読点区切り）
 - [ ] `make test-e2e`: 疑似上流にカスタムフィールド定義・値を追加し、
       主要フォーマット（テキスト・リスト・日付・真偽値・リンク）の表示を
       実機検証
