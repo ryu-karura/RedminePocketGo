@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -322,6 +323,36 @@ func TestIssueDetailReferenceLookupUnauthorizedIs409(t *testing.T) {
 	}
 }
 
+func TestIssueDetailMembershipLookupUnauthorizedIs409(t *testing.T) {
+	agg := &fakeAggregator{
+		issue: &redmine.Issue{ID: 42, Project: redmine.Ref{ID: 5},
+			CustomFields: []redmine.CustomFieldValue{{ID: 2, Value: "7"}}},
+		customFieldDefs: []redmine.CustomFieldDef{{ID: 2, FieldFormat: "user"}},
+		membershipsErr:  redmine.ErrUnauthorized,
+	}
+	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
+	if rec.Code != 409 {
+		t.Errorf("status = %d; want 409 on upstream 401 during membership lookup", rec.Code)
+	}
+}
+
+func TestIssueDetailAttachmentLookupUnauthorizedIs409(t *testing.T) {
+	agg := &fakeAggregator{
+		issue: &redmine.Issue{ID: 42, Project: redmine.Ref{ID: 5},
+			CustomFields: []redmine.CustomFieldValue{{ID: 4, Value: "9"}}},
+		customFieldDefs: []redmine.CustomFieldDef{{ID: 4, FieldFormat: "attachment"}},
+		attachmentErr:   redmine.ErrUnauthorized,
+	}
+	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
+	if rec.Code != 409 {
+		t.Errorf("status = %d; want 409 on upstream 401 during attachment lookup", rec.Code)
+	}
+}
+
 func TestIssueDetailReferenceLookupOtherErrorDegrades(t *testing.T) {
 	// バージョン一覧の取得が一時障害でも、詳細取得自体は失敗させず生値表示にする。
 	agg := &fakeAggregator{
@@ -373,6 +404,36 @@ func TestMetaDegradesWhenCustomFieldDefsUnavailable(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Bug") {
 		t.Errorf("other meta should still be present: %s", rec.Body)
 	}
+}
+
+// TestMetaConcurrentRequestsDoNotCorruptCachedMap は、同一ユーザーからの
+// 並行な GET /api/meta が、キャッシュされた同一マップへ customFields を
+// 書き込み合わない（concurrent map writes で fatal しない）ことを確認する。
+// meta() は h.Cache.meta.get が返す（10 分キャッシュ内は同一参照の）
+// map[string]any に直接 customFields を書き込んではならない。
+func TestMetaConcurrentRequestsDoNotCorruptCachedMap(t *testing.T) {
+	agg := &fakeAggregator{
+		trackers:        []redmine.Ref{{ID: 1, Name: "Bug"}},
+		statuses:        []redmine.Status{{ID: 1, Name: "New"}},
+		priorities:      []redmine.Ref{{ID: 2, Name: "Normal"}},
+		customFieldDefs: []redmine.CustomFieldDef{{ID: 1, Name: "優先タグ", FieldFormat: "list"}},
+	}
+	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+
+	const n = 32
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/meta", nil)))
+			if rec.Code != 200 {
+				t.Errorf("status = %d", rec.Code)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestMeta(t *testing.T) {

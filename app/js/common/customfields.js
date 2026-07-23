@@ -38,7 +38,11 @@ export function formatCustomFieldValue(field) {
   }
   if (format === 'link') {
     const raw = rawValuesOf(f.value)[0];
-    return raw ? { kind: 'link', text: raw, href: raw } : { kind: 'text', text: '—' };
+    if (!raw) return { kind: 'text', text: '—' };
+    // http/https 以外（javascript: 等）はアンカー化しない。値は Redmine の
+    // 利用者が自由に入力できるため、そのままリンク化すると XSS になりうる。
+    if (!/^https?:\/\//i.test(raw)) return { kind: 'text', text: raw };
+    return { kind: 'link', text: raw, href: raw };
   }
   if (format === 'text') {
     const joined = rawValuesOf(f.value).join('\n');

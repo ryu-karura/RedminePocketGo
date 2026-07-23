@@ -381,8 +381,14 @@ func (h *AggregateHandler) meta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// カスタムフィールド定義は別キャッシュ・別 degrade ポリシー（§6.4）のため、
-	// 上の必須メタとは独立に取得しマージする。
-	out := v.(map[string]any)
+	// 上の必須メタとは独立に取得しマージする。v はキャッシュヒット時に複数
+	// リクエストへ同一 map 参照が返るため、直接書き込むと並行アクセスで
+	// "concurrent map writes" fatal を起こす——書き込み用に新しい map へコピーする。
+	cached := v.(map[string]any)
+	out := make(map[string]any, len(cached)+1)
+	for k, val := range cached {
+		out[k] = val
+	}
 	out["customFields"] = h.customFieldDefs(r.Context(), userID, apiKey)
 	WriteJSON(w, http.StatusOK, out)
 }

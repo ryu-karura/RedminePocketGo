@@ -6,6 +6,8 @@ func TestMergeCustomFieldsResolvesListLabel(t *testing.T) {
 	values := []CustomFieldValue{{ID: 3, Name: "優先タグ", Value: "a"}}
 	defs := []CustomFieldDef{{
 		ID: 3, Name: "優先タグ", FieldFormat: "list", IsRequired: true,
+		MinLength:      1,
+		MaxLength:      10,
 		PossibleValues: []PossibleValue{{Value: "a", Label: "重要"}, {Value: "b", Label: "通常"}},
 	}}
 	out := MergeCustomFields(values, defs)
@@ -14,6 +16,9 @@ func TestMergeCustomFieldsResolvesListLabel(t *testing.T) {
 	}
 	if !out[0].IsRequired || out[0].FieldFormat != "list" {
 		t.Errorf("def not merged: %+v", out[0])
+	}
+	if out[0].MinLength != 1 || out[0].MaxLength != 10 {
+		t.Errorf("min/max length not merged: %+v", out[0])
 	}
 	if out[0].DisplayValue != "重要" {
 		t.Errorf("display_value = %q; want 重要", out[0].DisplayValue)

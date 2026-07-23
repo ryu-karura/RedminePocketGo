@@ -36,6 +36,12 @@ test('link: アンカー化', () => {
   assert.equal(r.text, 'https://example.com/x');
 });
 
+test('link: http/https 以外のスキームはアンカー化せずテキスト表示（javascript: 等の XSS 対策）', () => {
+  const r = formatCustomFieldValue({ field_format: 'link', value: 'javascript:alert(1)' });
+  assert.equal(r.kind, 'text');
+  assert.equal(r.text, 'javascript:alert(1)');
+});
+
 test('link: 未設定は — 表示（href なし）', () => {
   const r = formatCustomFieldValue({ field_format: 'link', value: null });
   assert.equal(r.kind, 'text');

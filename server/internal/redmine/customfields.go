@@ -14,6 +14,8 @@ type ResolvedCustomField struct {
 	FieldFormat    string          `json:"field_format,omitempty"`
 	IsRequired     bool            `json:"is_required,omitempty"`
 	Multiple       bool            `json:"multiple,omitempty"`
+	MinLength      int             `json:"min_length,omitempty"`
+	MaxLength      int             `json:"max_length,omitempty"`
 	PossibleValues []PossibleValue `json:"possible_values,omitempty"`
 	Value          any             `json:"value"`
 	DisplayValue   string          `json:"display_value,omitempty"`
@@ -36,6 +38,8 @@ func MergeCustomFields(values []CustomFieldValue, defs []CustomFieldDef) []Resol
 			r.FieldFormat = d.FieldFormat
 			r.IsRequired = d.IsRequired
 			r.Multiple = d.Multiple
+			r.MinLength = d.MinLength
+			r.MaxLength = d.MaxLength
 			r.PossibleValues = d.PossibleValues
 			if d.FieldFormat == "list" || d.FieldFormat == "key_value_list" {
 				r.ResolveDisplayValue(func(raw string) string {
