@@ -276,6 +276,42 @@ func TestIssueDetailDegradesWhenCustomFieldDefsUnavailable(t *testing.T) {
 	}
 }
 
+// TestIssueDetailCustomFieldDefsUnauthorizedIs409 は、定義取得
+// （GET /custom_fields.json）自体が上流 401 を返した場合、他の障害と違って
+// 「定義なしの degrade」ではなく再紐付けを促す 409 にすることを確認する
+// （Copilot レビュー指摘: customFieldDefs が 401 も無条件に飲み込んでいた）。
+func TestIssueDetailCustomFieldDefsUnauthorizedIs409(t *testing.T) {
+	agg := &fakeAggregator{
+		issue:           &redmine.Issue{ID: 42, Project: redmine.Ref{ID: 5}},
+		customFieldsErr: redmine.ErrUnauthorized,
+	}
+	keys := &fakeKeyLoader{key: "k"}
+	mux := newAggMux(agg, keys)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
+	if rec.Code != 409 {
+		t.Errorf("status = %d; want 409 on upstream 401 during custom field def lookup", rec.Code)
+	}
+	if keys.markedValid != "u1" {
+		t.Errorf("credential should be marked invalid; markedValid = %q", keys.markedValid)
+	}
+}
+
+func TestMetaCustomFieldDefsUnauthorizedIs409(t *testing.T) {
+	agg := &fakeAggregator{
+		trackers:        []redmine.Ref{{ID: 1, Name: "Bug"}},
+		statuses:        []redmine.Status{{ID: 1, Name: "New"}},
+		priorities:      []redmine.Ref{{ID: 2, Name: "Normal"}},
+		customFieldsErr: redmine.ErrUnauthorized,
+	}
+	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/meta", nil)))
+	if rec.Code != 409 {
+		t.Errorf("status = %d; want 409 on upstream 401 during custom field def lookup", rec.Code)
+	}
+}
+
 func TestIssueDetailResolvesVersionUserAndAttachment(t *testing.T) {
 	agg := &fakeAggregator{
 		issue: &redmine.Issue{ID: 42, Subject: "detail", Project: redmine.Ref{ID: 5},

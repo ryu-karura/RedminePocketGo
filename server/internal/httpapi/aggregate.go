@@ -232,7 +232,11 @@ func (h *AggregateHandler) issueDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defs := h.customFieldDefs(r.Context(), userID, apiKey)
+	defs, err := h.customFieldDefs(r.Context(), userID, apiKey)
+	if err != nil {
+		h.writeUpstream(w, r, userID, err)
+		return
+	}
 	merged := redmine.MergeCustomFields(issue.CustomFields, defs)
 	if err := h.resolveCustomFieldRefs(r.Context(), userID, apiKey, issue.Project.ID, merged); err != nil {
 		h.writeUpstream(w, r, userID, err)
@@ -334,21 +338,30 @@ func (h *AggregateHandler) resolveCustomFieldRefs(ctx context.Context, userID, a
 
 // customFieldDefs はカスタムフィールド定義を取得する（10 分キャッシュ、
 // ユーザー単位）。上流仕様上 `GET /custom_fields.json` は管理者権限が
-// 必要なため、非管理者アカウントでの失敗は定義なし（空スライス）として
-// 常に degrade する——呼び出し元を失敗させない（Design.md §6.4）。
-func (h *AggregateHandler) customFieldDefs(ctx context.Context, userID, apiKey string) []redmine.CustomFieldDef {
-	v, _ := h.Cache.customFieldDefs.get(userID, func() (any, error) {
+// 必要なため、非管理者アカウントでの失敗（403 等）は定義なし（空スライス）
+// として degrade し、呼び出し元を失敗させない（Design.md §6.4）。ただし
+// 上流 401（API キー自体が無効）は他の経路と同様に呼び出し元へ伝播し、
+// 再紐付けを促す——ここだけ黙って degrade すると、キーが無効なのに
+// チケット詳細やメタ情報だけは中途半端に表示され続けてしまう。
+func (h *AggregateHandler) customFieldDefs(ctx context.Context, userID, apiKey string) ([]redmine.CustomFieldDef, error) {
+	v, err := h.Cache.customFieldDefs.get(userID, func() (any, error) {
 		defs, err := h.Redmine.ListCustomFieldDefs(ctx, apiKey)
 		if err != nil {
+			if errors.Is(err, redmine.ErrUnauthorized) {
+				return nil, err // 呼び出し元へ伝播。キャッシュしない
+			}
 			h.logErr("custom field defs unavailable; degrading to raw display", userID, err)
 			return []redmine.CustomFieldDef{}, nil
 		}
 		return defs, nil
 	})
-	if v == nil {
-		return nil
+	if err != nil {
+		return nil, err
 	}
-	return v.([]redmine.CustomFieldDef)
+	if v == nil {
+		return nil, nil
+	}
+	return v.([]redmine.CustomFieldDef), nil
 }
 
 func (h *AggregateHandler) meta(w http.ResponseWriter, r *http.Request) {
@@ -384,12 +397,17 @@ func (h *AggregateHandler) meta(w http.ResponseWriter, r *http.Request) {
 	// 上の必須メタとは独立に取得しマージする。v はキャッシュヒット時に複数
 	// リクエストへ同一 map 参照が返るため、直接書き込むと並行アクセスで
 	// "concurrent map writes" fatal を起こす——書き込み用に新しい map へコピーする。
+	defs, err := h.customFieldDefs(r.Context(), userID, apiKey)
+	if err != nil {
+		h.writeUpstream(w, r, userID, err)
+		return
+	}
 	cached := v.(map[string]any)
 	out := make(map[string]any, len(cached)+1)
 	for k, val := range cached {
 		out[k] = val
 	}
-	out["customFields"] = h.customFieldDefs(r.Context(), userID, apiKey)
+	out["customFields"] = defs
 	WriteJSON(w, http.StatusOK, out)
 }
 
