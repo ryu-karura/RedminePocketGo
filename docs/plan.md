@@ -31,7 +31,7 @@
 | 5 | フロントエンド基盤とログイン画面 | 完了 |
 | 6 | 業務画面（projects / issues / issue-detail / settings） | 完了 |
 | 7 | 端末紛失対策とセキュリティ強化 | スキップ（対応しない） |
-| 8 | 統合テストと運用スクリプト | 進行中 |
+| 8 | 統合テストと運用スクリプト | 完了 |
 | 9 | チケット詳細のカスタムフィールド表示 | 完了 |
 | — | 地図表示（Design.md §12） | 指示があるまで着手しない |
 
@@ -224,8 +224,15 @@
 
 完了条件: RedmineDocker 開発スタックを起動した状態で
 `scripts/test-stack.sh` 緑。`shellcheck scripts/*.sh` 通過。
-上記 CI ワークフローの実行結果をもって満たされたとみなす（Docker
-デーモンのない開発サンドボックスでは実行・確認できないため）。
+2026-07-23、PR #7 の `stack-test.yml` 実行（コミット da81b3a、
+https://github.com/ryu-karura/RedminePocketGo/actions/runs/30048975614/job/89346599407）
+で実際に緑を確認し、本フェーズを完了とした。途中、
+`scripts/redmine-seed-testdata.sh` 側に 2 件の実装バグ（entrypoint.sh が
+`SECRET_KEY_BASE` を自プロセス内でのみ export しており `docker exec` の
+新規プロセスには伝播しないこと、シークレットファイルが root にしか
+読めず `-u redmine` では Permission denied になること）が
+CI 経由で初めて顕在化し、修正した（サンドボックスでは Docker
+デーモンがなく検出できなかった類の不具合）。
 
 ## フェーズ 9: チケット詳細のカスタムフィールド表示
 
@@ -312,3 +319,4 @@
 | 2026-07-23 | 上記の記載漏れを是正: フェーズ 9（チケット詳細のカスタムフィールド表示）追加の経緯を遡って記録する | オーナー（ryu-karura）からの直接指示（現行の未クローズ PR の次の作業として、Redmine のカスタムフィールド 12 フォーマットを定義ルールどおりに表示する機能追加）を受けて着手した。フェーズ 8（PR #5）は Docker デーモン非搭載サンドボックスでの検証待ちのみで残タスクはなく、フェーズ 7 はオーナー指示によりスキップ済みのため、オーナーの直接指示を計画の明示的な再順序付けとして扱い、フェーズ 9 として並行して着手した |
 | 2026-07-23 | PR #6（フェーズ 9）ブランチに `origin/main`（PR #5 マージ後）を取り込み、`docs/plan.md` フェーズ一覧のフェーズ 7・8 状態を main 側の最新値（スキップ／進行中）で採用し、フェーズ 9 の完了行を追加する形に解消 | オーナーから「main とマージして」の直接指示を受けたため。ブランチ作成後に main 側で PR #5（フェーズ 8）が追加した内容（ヘルスエンドポイント、test-stack.sh、backup/restore、フェーズ 7 スキップ注記、複数の自動実行ログ行）と `docs/plan.md`・`server/internal/redmine/client.go` が競合したため、両者の変更を保持する形でマージ解消した |
 | 2026-07-23 | フェーズ 8 に「`scripts/redmine-seed-testdata.sh` + `.github/workflows/stack-test.yml`」タスクを追加し完了 | オーナーの直接指示（ブランチ `claude/docker-config-review-ezxi6j`）。フェーズ 8 唯一の残完了条件「実 RedmineDocker スタックでの `scripts/test-stack.sh` 緑」が、Docker デーモンのない無人サンドボックスでは 3 回連続（自動実行ログ 07-23 04:11・10:11・16:13）検証不能で停滞していたため、Docker デーモンを持つ GitHub Actions 上で REST API 有効化・テストデータ投入・`scripts/test-stack.sh` 実行までを自動化する CI ワークフローを追加し、完了条件の検証手段をサンドボックス非依存にした。本セッションでは PR 作成のみを行い、CI 実行結果（stack-test ワークフローの緑）そのものの確認は次回に委ねる |
+| 2026-07-23 | フェーズ 8 の状態を「進行中」から「完了」に変更 | PR #7 の CI（`stack-test.yml`、コミット da81b3a）で `scripts/test-stack.sh` の緑を実際に確認できたため。CI 実行で `scripts/redmine-seed-testdata.sh` の実装バグ 2 件（`docker exec` が entrypoint.sh 由来の `SECRET_KEY_BASE` を継承しないこと、シークレットファイルが root にしか読めないこと）が初めて顕在化し、いずれも修正済み。フェーズ 8 完了条件の詳細はフェーズ 8 節を参照 |
