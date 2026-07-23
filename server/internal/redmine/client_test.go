@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -434,5 +435,40 @@ func TestClientPaginationNoDuplicateOnShortPage(t *testing.T) {
 			t.Errorf("duplicate project id %d (pagination overlap)", p.ID)
 		}
 		seen[p.ID] = true
+	}
+}
+
+func TestClientPingReachable(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusFound) // Redmine の未ログインルートは 302 を返す。到達性のみ見る。
+	}))
+	defer srv.Close()
+
+	if err := newTestClient(srv.URL, 100).Ping(context.Background()); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if gotPath != "/redmine/" {
+		t.Errorf("path = %q; want /redmine/", gotPath)
+	}
+}
+
+func TestClientPingUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("unreachable サーバーへリクエストが飛んではいけない")
+	}))
+	srv.Close() // 閉じた直後の URL は接続不能
+
+	err := newTestClient(srv.URL, 100).Ping(context.Background())
+	if err == nil {
+		t.Fatal("Ping: エラーなし; 到達不能を検知できていない")
+	}
+	if !errors.Is(err, ErrUpstream) {
+		t.Errorf("Ping error = %v; want wrapping ErrUpstream", err)
+	}
+	var netErr *net.OpError
+	if !errors.As(err, &netErr) {
+		t.Errorf("Ping error = %v; want the original connection error preserved in the chain (errors.As)", err)
 	}
 }

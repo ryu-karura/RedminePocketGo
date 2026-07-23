@@ -30,8 +30,8 @@
 | 4 | Redmine クライアントと集約 API | 完了 |
 | 5 | フロントエンド基盤とログイン画面 | 完了 |
 | 6 | 業務画面（projects / issues / issue-detail / settings） | 完了 |
-| 7 | 端末紛失対策とセキュリティ強化 | 未着手 |
-| 8 | 統合テストと運用スクリプト | 未着手 |
+| 7 | 端末紛失対策とセキュリティ強化 | スキップ（対応しない） |
+| 8 | 統合テストと運用スクリプト | 進行中 |
 | 9 | チケット詳細のカスタムフィールド表示 | 完了 |
 | — | 地図表示（Design.md §12） | 指示があるまで着手しない |
 
@@ -186,7 +186,7 @@
 ## フェーズ 7: 端末紛失対策とセキュリティ強化
 
 目的: Design.md §11 の脅威対策を完成させる。
-      本フェーズ対応はスキップする
+      本フェーズ対応はスキップする（2026-07-23 オーナー指示。変更履歴参照）
 
 - [ ] 初回登録完了時に 2 台目登録を促す画面
 - [ ] 回復コード（10 個、1 回限り）の発行・保管促し・ログイン、
@@ -201,13 +201,17 @@
 
 目的: RedmineDocker 実スタックとの疎通と、運用の道具立てを揃える。
 
-- [ ] `scripts/test-stack.sh`（起動確認、ヘルスチェック、許可リスト経由の
-      往復 1 件。CLAUDE.md §5）
-- [ ] `scripts/backup.sh` / `scripts/restore.sh`（SQLite と secrets、
-      restore は確認リテラル必須）
-- [ ] ヘルスエンドポイント（test-stack.sh が叩く対象）
-- [ ] ドキュメント同期の最終確認（Design.md / Setup.md / Manual.md /
-      README.md が実装と一致しているか。`docs-sync` の観点）
+- [x] ヘルスエンドポイント（`GET /healthz` / `GET /readyz`。Setup.md §11。
+      test-stack.sh が叩く対象のため test-stack.sh より先に実装）
+- [x] `scripts/test-stack.sh`（起動確認、ヘルスチェック、許可リスト経由の
+      往復 1 件。CLAUDE.md §5。往復確認は `server/stacktest`（build tag
+      `stack`）を呼び出す。実 RedmineDocker への到達が前提のため、通常の
+      test-unit/test-api/CI には含めない）
+- [x] `scripts/backup.sh` / `scripts/restore.sh`（SQLite と secrets、
+      restore は確認リテラル必須。対象・保持世代数は docs/Manual.md §4.1）
+- [x] ドキュメント同期の最終確認（Design.md / Setup.md / Manual.md /
+      README.md が実装と一致しているか。`docs-sync` の観点。監査の詳細は
+      自動実行ログ参照）
 
 完了条件: RedmineDocker 開発スタックを起動した状態で
 `scripts/test-stack.sh` 緑。`shellcheck scripts/*.sh` 通過。
@@ -273,6 +277,10 @@
 | 2026-07-21 16:07 | 6 | 2/6（進行中） | openIssues 集約（client/aggregate）+ projects 件数列 + E2E | プロジェクト別 未完了チケット数を実装。redmine.Client.CountOpenIssues（`/issues.json?project_id&status_id=open&subproject_id=!*&limit=1` の total_count）をテストファーストで追加、集約ハンドラが projects/tree の各ノードに `openIssues` を後付け（キー単位で並行取得、上流 401 のみ伝播しその他障害は件数欠測でツリー描画継続）。ProjectNode に `*int openIssues,omitempty`。画面は右端に件数列を追加。E2E の擬似上流に `/issues.json` を追加し件数（基幹=12/社内=8）の描画を実機検証。全スイート緑（node 20 / unit / api / build / e2e）。フェーズ 6 継続（issues / issue-detail / モーダル / settings / 4 状態・a11y が残り）。失敗なし |
 | 2026-07-21 10:07 | 6 | 1/6（進行中） | projects 画面 + tree.expandedIdsFor + E2E + app.js 競合修正 | フェーズ 6 に着手。`projects` 画面を実装（dataTree 描画・開閉状態の localStorage 保存・検索時の祖先自動展開・行タップで issues へ・4 状態）。純粋関数 `expandedIdsFor` を追加し単体テスト（node 20 件緑）。E2E を拡張し、集約 API からのツリー描画と検索絞り込みを実機検証（make test-e2e 緑）。E2E で app.js の画面フラグメント二重生成バグ（`loadFragment` の未解決キャッシュ競合）を発見し修正、LESSONS #3・#4 追記。「未完了件数」はサーバー集約が必要なため独立タスクへ分離。フェーズ 6 は継続（issues / issue-detail / モーダル / settings / 4 状態・a11y が残り）。失敗なし |
 | 2026-07-22 13:12 | 6 | 6/6（完了） | e2b2c40c〜720ab16（レビュー修正2＋タスク3件＋品質ゲート） | PR #3 を継続。まずレビューコメント3件に対応（enroll.go のコード発行リトライがエラー原因を握りつぶす不具合を修正／tree.js のコメント明確化／go.mod の go ディレクティブは検証の上 1.25.0 を維持＝`go mod tidy` の正規出力と一致、スレッド上で理由を返信）。続けてフェーズ 6 残タスクを実装: (1) チケット作成モーダル（#modal-<key> ルーティングを app.js/modal.js に新設、POST /api/redmine/issues.json）。(2) settings 画面（端末一覧・削除、登録コード発行、Redmine 再紐付け=新規 POST /api/auth/relink＋GET /api/auth/me の redmineStatus、ログアウト）。(3) 全画面 4 状態・a11y 監査（Tabulator の dataTree 行に role=treeitem/aria-level/aria-expanded を付与＝Tabulator 自身が role=tree を role=grid で上書きする不具合も修正、検索/フィルタの空状態に次アクション導線を追加）。E2E をチケット作成・設定画面・error+retry・redmine_credential_invalid→再紐付け→復旧まで拡張（スクリーンショット 10-17）。LESSONS #5（isModalHash が `/` パラメータ付きハッシュを弾く）・#6（e2e で直前のトーストが固定位置のクリック座標を覆う）を追記。品質ゲート: `code-review` スキルはモデル呼び出し不可（disable-model-invocation）のため、フェーズ 6 全差分（6a9a9ad..HEAD）を 2 並列の独立レビューエージェント（サーバー側／フロント側）による発見＋自分での検証に代替。CONFIRMED 5 件修正（enrichOpenCounts がコンテキストキャンセルを1ノードの一時障害と誤扱いし60秒キャッシュへ欠測値を焼き付ける／POST /api/auth/relink のレート制限キーが認証後にも関わらず IP 単位で無関係な同一 IP 利用者を巻き添えにする／Bootstrap.Relink の store エラー未ラップ／モーダルを開いたまま画面遷移した場合に古い fetch が着地後の画面へ重なる競合／`#modal-*` ハッシュへの直接遷移＝リロード時に背景画面が無いままモーダルだけ浮く／issue-detail のコメント下書きが送信成功後も一瞬再表示され二重送信を誘発）。見送り1件（isConstraintErr が PK 衝突と FK 違反を判別できない、理由付き）。完了条件（`node --test` 緑=36件、`make test-e2e` 緑=全画面4状態＋redmine_credential_invalid→再紐付け→復旧を実機検証）を検証済み。フェーズ 6 完了 |
+| 2026-07-22 22:46 | 7→8 | 4/4（進行中） | 88ee732〜0ba79a5（新規 PR #5、レビュー修正1、ドキュメント同期1） | オープンな追跡 PR なし、origin/main から claude/plan-phase-8 を新規作成。フェーズ 7（端末紛失対策とセキュリティ強化）はオーナーが直接 main へコミットしたスキップ指示（6515cf8）を反映して状態を「スキップ」に変更し、フェーズ 8 を進行中へ昇格。フェーズ 8 の 4 タスクを実装: (1) ヘルスエンドポイント `GET /healthz`（liveness）・`GET /readyz`（Redmine 到達性。`redmine.Client.Ping` 新設）。依存関係により test-stack.sh より先に着手する計画変更を plan.md に記録。(2) `scripts/test-stack.sh`（起動確認・ヘルスチェック・許可リスト経由の往復 1 件。往復は `server/stacktest`＝build tag `stack`、`credential.NewTestAPIKey` でバウルトを介さず実 API キーを配線）。ローカルの模擬 Redmine でスクリプト全体を実機検証（成功／上流ダウン／API キー未設定の各失敗経路、プロセス後始末を確認）。実 RedmineDocker スタックでの検証はこの環境に docker デーモンがないため未実施（次回、実スタックのある環境での確認が必要）。(3) `scripts/backup.sh` / `scripts/restore.sh`（鍵・設定・DB を tar.gz 化、7 世代保持、restore は確認語 RESTORE 必須）。フィクスチャでバックアップ→破損→復元の往復と世代保持ロジックを実機検証。(4) ドキュメント同期の最終確認: 専用エージェントによる Design.md/Setup.md/Manual.md/README.md の監査を実施し、11 件の実装との不一致を発見・修正（最重要: config.yaml の webroot/secretFile/kekFile が `../../`＝2 階層上参照になっており、Setup.md の手順どおり `cd server && ./bin/rmapp -config config/config.yaml` で起動すると secrets/DB を見失って起動失敗することを実機再現の上 `../` に修正・再検証／存在しない `rmapp serve`/`migrate`/`validate` サブコマンドの記述を実際の単一起動モードに合わせて修正／存在しない `config.example.yaml`・`scripts/healthcheck.sh` の参照を削除／DSN 例の `_fk=1` を実ドライバ modernc.org/sqlite 向け `_pragma=foreign_keys(1)` に修正／Go バージョン記載を 1.22→1.25 に修正／フェーズ 7 スキップに伴い、実装されていない回復コードを Setup.md・Manual.md から削除し Design.md §11.4 に未実装の注記／Design.md に §6.7 運用監視エンドポイントを追記／Manual.md のログ項目・メッセージ表を実際の slog 呼び出しに合わせて全面修正／Manual.md §4 のバックアップ・復元手順を実スクリプトの環境変数・非停止動作に合わせて修正）。GitHub Copilot のレビューコメント3件にも対応（bin/ ディレクトリ未作成での build 失敗懸念→ mkdir -p 追加／stacktest の http.Get がタイムアウトなし→明示的 http.Client{Timeout} 化／Ping のエラーラップが `%v` で原因を chain に残さない→ Go 1.20+ の複数 `%w` で修正、errors.As の回帰テスト追加）。全スイート緑（build/test-unit/test-api/shellcheck/vet 通常・stack タグ）。フェーズ 8 は全タスク完了だが、完了条件のうち実 RedmineDocker スタックでの test-stack.sh 実行が本環境では検証不能なため、状態は「進行中」のまま維持（次回、実スタック環境での確認をもって「完了」に昇格）。失敗なし |
+| 2026-07-23 04:11 | 8 | 0/4（進行中・進捗なし） | なし | 追跡 PR #5（claude/plan-phase-8）を継続。origin と作業ブランチの分岐なし。レビュースレッド 3 件はすべて resolved、CI（shellcheck / frontend / server の 3 ジョブ）は全緑で対応不要。フェーズ 8 は 4 タスクとも [x] 済みで現フェーズに未着手タスクがなく、実装ルール（未着手タスクなしに実装しない）により新規実装は行わず。唯一残る完了条件「RedmineDocker 開発スタックを起動した状態での `scripts/test-stack.sh` 緑」を本セッションで再確認したが、`docker version` はクライアントのみ応答し `/var/run/docker.sock` が存在せず dockerd 未起動（前回実行と同一の環境制約、rootless サンドボックスに docker デーモンなし）。フェーズ 8 は「進行中」を維持。次フェーズは地図表示のみでオーナー指示があるまで不着手のため対象外。コミットなし・失敗なし |
+| 2026-07-23 10:11 | 8 | 0/4（進行中・進捗なし・停滞検知） | なし | 追跡 PR #5（claude/plan-phase-8）を継続。origin と作業ブランチの分岐なし。CI 6 ジョブ全緑、レビュースレッド 3 件は resolved のまま新規コメントなし。フェーズ 8 は 4 タスクとも [x] 済みで未着手タスクがなく新規実装は行わず。唯一残る完了条件（実 RedmineDocker スタックでの `scripts/test-stack.sh` 実行）を再確認したが、前回同様 `/var/run/docker.sock` が存在せず dockerd 未起動（rootless サンドボックスに docker デーモンなし。この制約はセッション環境に起因し、無人実行側では解消不能）。前回（04:11）と今回の 2 回連続で同一タスク・実装コミットゼロのため、SKILL.md の停滞検知規則に該当。本セッションには定期トリガーを無効化する `update_trigger` 相当のツールが利用可能なツール一覧に存在しなかったため、トリガー自体は無効化できず、PushNotification でオーナーに原因（実 Docker デーモンが必要な完了条件が無人サンドボックスでは検証不能）と再開方法（Docker デーモンのある環境で `scripts/test-stack.sh` を実行し緑を確認のうえ、フェーズ 8 を手動で完了に昇格するか、トリガーの完了条件をこのサンドボックスで検証可能な範囲に見直す）を報告した。コミットなし・失敗なし |
+| 2026-07-23 16:13 | 8 | 0/4（進行中・進捗なし・停滞継続） | なし | 追跡 PR #5（claude/plan-phase-8）を継続。origin と作業ブランチの分岐なし。CI 最新実行 success、レビュースレッド 3 件は resolved のまま新規コメントなし。フェーズ 8 は 4 タスクとも [x] 済みで未着手タスクがなく新規実装は行わず。`docker version` を再確認したが本セッションでも `/var/run/docker.sock` が存在せず dockerd 未起動（3 回連続・同一の構造的ブロッカー）。04:11・10:11 に続き今回で 3 回連続進捗ゼロ。前回ログどおり本セッションの利用可能ツールにも `update_trigger` 相当は存在しない（`ToolSearch` で確認済み）ため、トリガーは無効化できず、PushNotification でオーナーに再度報告した。加えて、別件としてオープン PR を確認したところ **PR #6（claude/redmine-custom-fields-display-br8zwb、フェーズ 9）が、フェーズ 8 未完了・フェーズ 7 未着手のまま `docs/plan.md` にフェーズ 9 を新設し着手・完了させていたことを発見**（コミット d2b820c、変更履歴への記載なし＝計画変更の無断実施）。本フェーズの手番ではないため PR #6 へは着手・マージ操作を行わず、オーナー判断を仰ぐため PushNotification で報告のみ行った。コミットなし・失敗なし |
 
 ## 変更履歴
 
@@ -286,3 +294,9 @@
 | 2026-07-21 | フェーズ 6 の `projects` タスクから「未完了件数」を分離し独立タスク化 | 件数はサーバー側の集約追加（`/api/projects/tree` への `openIssues` 付与）が必要で、画面描画タスクとは粒度が異なるため。テストファースト単位を明確化する |
 | 2026-07-21 | app.js の画面フラグメント二重生成バグを修正（`loadFragment` を Promise キャッシュ化 + `enterApp` の route 二重呼び出し回避） | フェーズ 6 の projects E2E で発覚。route が並行呼び出しされると未解決キャッシュを二者が見て section を二重生成し、`#projectsTree` が重複していた（フェーズ 5 コードの欠陥） |
 | 2026-07-21 | `issues` タスクから「追加読み込み（無限スクロール）」を除外 | 集約 API `/api/projects/{id}/issues/tree` がサーバー側で全ページを結合し全件返すため、クライアント側のページングは不要。Design.md §7.7 のモックアップ上の表現との差分を明示 |
+| 2026-07-23 | フェーズ 7（端末紛失対策とセキュリティ強化）の状態を「未着手」から「スキップ（対応しない）」に変更し、フェーズ 8 を進行中に昇格 | オーナー（ryu-karura）がコミット 6515cf8 で本フェーズ対応をスキップする旨を直接指示したため。無人実行はこの指示を計画の状態に反映し、フェーズ 8 へ進む |
+| 2026-07-23 | フェーズ 8 のタスク順を変更し「ヘルスエンドポイント」を「`scripts/test-stack.sh`」より先に並べ替え | test-stack.sh はヘルスエンドポイントを叩く前提のため、記載順のまま着手すると依存が逆転する。実装順を依存関係に合わせて明示化 |
+| 2026-07-23 | 停滞検知（04:11・10:11 の 2 回連続でフェーズ 8 が同一タスク・実装コミットゼロ）を記録。定期トリガーは無効化できていない | 唯一残る完了条件「実 RedmineDocker スタックでの `scripts/test-stack.sh` 緑」が無人サンドボックス（docker デーモン不在）では検証不能で、無人実行だけでは解消しない構造的ブロッカーのため SKILL.md の停滞検知規則に該当。本セッションの利用可能ツールに定期トリガーを無効化する手段（`update_trigger` 相当）がなく、トリガー自体の無効化はオーナーへの報告・手動対応に委ねる |
+| 2026-07-23 | PR #6（フェーズ 9・カスタムフィールド表示）が、フェーズ 7 未着手・フェーズ 8 未完了のまま計画順序を飛ばして着手・完了していたことを記録として残す（変更自体は取り消していない） | コミット d2b820c がフェーズ 9 を `docs/plan.md` に新設した際、本表（変更履歴）への記載がなく、オーナー承認の記録もない。SKILL.md の「フェーズは番号順に進める」「未着手タスクなしに次フェーズへ進まない」「計画変更は必ず変更履歴に理由を記載」に反する無断の計画変更のため、事実関係のみ記録しオーナー判断（PR #6 の扱い・フェーズ番号の整理）を仰ぐ |
+| 2026-07-23 | 上記の記載漏れを是正: フェーズ 9（チケット詳細のカスタムフィールド表示）追加の経緯を遡って記録する | オーナー（ryu-karura）からの直接指示（現行の未クローズ PR の次の作業として、Redmine のカスタムフィールド 12 フォーマットを定義ルールどおりに表示する機能追加）を受けて着手した。フェーズ 8（PR #5）は Docker デーモン非搭載サンドボックスでの検証待ちのみで残タスクはなく、フェーズ 7 はオーナー指示によりスキップ済みのため、オーナーの直接指示を計画の明示的な再順序付けとして扱い、フェーズ 9 として並行して着手した |
+| 2026-07-23 | PR #6（フェーズ 9）ブランチに `origin/main`（PR #5 マージ後）を取り込み、`docs/plan.md` フェーズ一覧のフェーズ 7・8 状態を main 側の最新値（スキップ／進行中）で採用し、フェーズ 9 の完了行を追加する形に解消 | オーナーから「main とマージして」の直接指示を受けたため。ブランチ作成後に main 側で PR #5（フェーズ 8）が追加した内容（ヘルスエンドポイント、test-stack.sh、backup/restore、フェーズ 7 スキップ注記、複数の自動実行ログ行）と `docs/plan.md`・`server/internal/redmine/client.go` が競合したため、両者の変更を保持する形でマージ解消した |
