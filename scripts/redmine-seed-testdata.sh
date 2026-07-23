@@ -57,6 +57,11 @@ REDMINE_ADMIN_LOGIN="${REDMINE_ADMIN_LOGIN:-admin}"
 REDMINE_BASE_URL="${REDMINE_BASE_URL:-http://localhost:8080}"
 REDMINE_SUBURI="${REDMINE_SUBURI:-/redmine}"
 REDMINE_TEST_PROJECT_IDENTIFIER="${REDMINE_TEST_PROJECT_IDENTIFIER:-rmapp-ci-testdata}"
+# Redmine の identifier 制約に合わせて検証する（URL パスと JSON 文字列値の
+# 両方に生のまま埋め込むため、この文字集合を外れる値は URL 誤解釈や JSON
+# 破壊につながる）。
+[[ "${REDMINE_TEST_PROJECT_IDENTIFIER}" =~ ^[a-z0-9_-]+$ ]] \
+  || die "REDMINE_TEST_PROJECT_IDENTIFIER が不正です（英小文字・数字・-・_ のみ使用可）: ${REDMINE_TEST_PROJECT_IDENTIFIER}"
 
 if [[ -z "${REDMINE_ADMIN_PASSWORD:-}" ]]; then
   # 16進32文字。`head -c N` で打ち切るパイプは、書き込み側が SIGPIPE を
@@ -68,10 +73,12 @@ fi
 # ローカル実行時はそのまま無害な行として扱われる）。
 printf '::add-mask::%s\n' "${REDMINE_ADMIN_PASSWORD}" >&2
 
-# 対話端末から実行された場合のみ確認する（破壊的操作: 管理者パスワードの
-# 上書き、REST API の有効化。scripts/restore.sh の確認語方式に合わせる）。
-# CI（非対話実行、標準入力が端末でない）はそのまま続行する。
-if [[ -t 0 ]]; then
+# CI（GitHub Actions 等が設定する CI=true）でのみ確認をスキップする
+# （破壊的操作: 管理者パスワードの上書き、REST API の有効化。
+# scripts/restore.sh の確認語方式に合わせる）。標準入力が端末でない
+# だけの非対話実行（cron・パイプ経由など）は CI とはみなさず、
+# 確認語の入力を要求する（読めなければ read が失敗し安全側に倒れる）。
+if [[ -z "${CI:-}" ]]; then
   log "${REDMINE_WEB_CONTAINER} コンテナの REST API を有効化し、管理者（${REDMINE_ADMIN_LOGIN}）のパスワードを上書きします。"
   read -rp "続行するには CONTINUE と入力してください: " confirm
   [[ "${confirm}" == "CONTINUE" ]] || die "確認語が一致しないため中止しました"
