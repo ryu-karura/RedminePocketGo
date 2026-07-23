@@ -226,7 +226,7 @@
       素の文字列・`{value,label}` オブジェクトの両方を受け付ける）
 - [x] `internal/redmine`: `Issue.CustomFields []CustomFieldValue`
       （id/name/value、value は文字列・配列どちらも許容）
-- [ ] `internal/redmine`: `ListProjectVersions`
+- [x] `internal/redmine`: `ListProjectVersions`
       （`GET /projects/{id}/versions.json`）、`ListProjectMemberships`
       （`GET /projects/{id}/memberships.json`）— version/user 参照解決用
 - [ ] `internal/proxy/allowlist.go` と Design.md §6.2 に

@@ -165,6 +165,21 @@ type CustomFieldDef struct {
 	PossibleValues []PossibleValue `json:"possible_values,omitempty"`
 }
 
+// Version はプロジェクトのバージョン（`version` フォーマットのカスタム
+// フィールドを参照解決するために使う。Design.md §7.8）。
+type Version struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// Membership はプロジェクトのメンバー 1 件。グループのメンバーシップは
+// User が nil（`user` フォーマットのカスタムフィールドの参照解決では
+// スキップする。Design.md §7.8）。
+type Membership struct {
+	ID   int  `json:"id"`
+	User *Ref `json:"user,omitempty"`
+}
+
 // ---- 取得 ----
 
 // get は 1 リクエストを実行し JSON を v に読む。一時的な失敗（接続エラー、
@@ -378,6 +393,32 @@ func (c *Client) ListCustomFieldDefs(ctx context.Context, apiKey string) ([]Cust
 		}
 	}
 	return out, nil
+}
+
+// ListProjectVersions はプロジェクトのバージョン一覧を返す
+// （`version` フォーマットのカスタムフィールド参照解決用）。
+func (c *Client) ListProjectVersions(ctx context.Context, apiKey string, projectID int) ([]Version, error) {
+	var wrap struct {
+		Versions []Version `json:"versions"`
+	}
+	path := "/projects/" + strconv.Itoa(projectID) + "/versions.json"
+	if err := c.get(ctx, apiKey, path, nil, &wrap); err != nil {
+		return nil, err
+	}
+	return wrap.Versions, nil
+}
+
+// ListProjectMemberships はプロジェクトのメンバー一覧を返す
+// （`user` フォーマットのカスタムフィールド参照解決用）。
+func (c *Client) ListProjectMemberships(ctx context.Context, apiKey string, projectID int) ([]Membership, error) {
+	var wrap struct {
+		Memberships []Membership `json:"memberships"`
+	}
+	path := "/projects/" + strconv.Itoa(projectID) + "/memberships.json"
+	if err := c.get(ctx, apiKey, path, nil, &wrap); err != nil {
+		return nil, err
+	}
+	return wrap.Memberships, nil
 }
 
 // ListPriorities は優先度一覧を返す。

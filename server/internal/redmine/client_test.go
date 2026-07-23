@@ -337,6 +337,51 @@ func TestGetIssueParsesCustomFields(t *testing.T) {
 	}
 }
 
+func TestListProjectVersions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/redmine/projects/5/versions.json" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"versions":[{"id":3,"name":"v2.0"},{"id":4,"name":"v3.0"}]}`)
+	}))
+	defer srv.Close()
+
+	versions, err := newTestClient(srv.URL, 100).ListProjectVersions(context.Background(), "k", 5)
+	if err != nil {
+		t.Fatalf("ListProjectVersions: %v", err)
+	}
+	if len(versions) != 2 || versions[0].ID != 3 || versions[0].Name != "v2.0" {
+		t.Errorf("versions = %+v", versions)
+	}
+}
+
+func TestListProjectMemberships(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/redmine/projects/5/memberships.json" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"memberships":[
+			{"id":1,"user":{"id":2,"name":"Alice"}},
+			{"id":2,"group":{"id":9,"name":"開発チーム"}}
+		]}`)
+	}))
+	defer srv.Close()
+
+	ms, err := newTestClient(srv.URL, 100).ListProjectMemberships(context.Background(), "k", 5)
+	if err != nil {
+		t.Fatalf("ListProjectMemberships: %v", err)
+	}
+	if len(ms) != 2 {
+		t.Fatalf("memberships = %+v; want 2", ms)
+	}
+	if ms[0].User == nil || ms[0].User.Name != "Alice" {
+		t.Errorf("memberships[0].User = %+v", ms[0].User)
+	}
+	if ms[1].User != nil {
+		t.Errorf("memberships[1] (group, no user) should have nil User: %+v", ms[1].User)
+	}
+}
+
 func TestClientPaginationNoDuplicateOnShortPage(t *testing.T) {
 	// pageSize=100 だが各ページが 60 件しか返さない（total=150）状況。
 	// offset を返り件数で進めると重複するが、pageSize で進めれば重複しない。
