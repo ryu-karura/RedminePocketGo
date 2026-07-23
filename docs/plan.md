@@ -32,6 +32,7 @@
 | 6 | 業務画面（projects / issues / issue-detail / settings） | 完了 |
 | 7 | 端末紛失対策とセキュリティ強化 | スキップ（対応しない） |
 | 8 | 統合テストと運用スクリプト | 進行中 |
+| 9 | チケット詳細のカスタムフィールド表示 | 完了 |
 | — | 地図表示（Design.md §12） | 指示があるまで着手しない |
 
 状態は「未着手 / 進行中 / 完了」の 3 値。変更したら同じコミットで更新する。
@@ -215,6 +216,46 @@
 完了条件: RedmineDocker 開発スタックを起動した状態で
 `scripts/test-stack.sh` 緑。`shellcheck scripts/*.sh` 通過。
 
+## フェーズ 9: チケット詳細のカスタムフィールド表示
+
+目的: Redmine 上で定義された任意のカスタムフィールド（キー・バリュー
+リスト／テキスト／バージョン／ファイル／ユーザー／リスト／リンク／小数／
+整数／日付／真偽値／長いテキストの 12 フォーマット）を、Redmine の定義
+ルール（表示順、必須可否、長さ・上下限、選択肢）に従って `issue-detail`
+画面に表示する。編集（入力バリデーション）は対象外——本フェーズは表示のみ。
+
+- [x] `internal/redmine`: `CustomFieldDef` / `PossibleValue` 型と
+      `ListCustomFieldDefs`（`GET /custom_fields.json`、
+      `customized_type=="issue"` のみ抽出。`possible_values` は
+      素の文字列・`{value,label}` オブジェクトの両方を受け付ける）
+- [x] `internal/redmine`: `Issue.CustomFields []CustomFieldValue`
+      （id/name/value、value は文字列・配列どちらも許容）
+- [x] `internal/redmine`: `ListProjectVersions`
+      （`GET /projects/{id}/versions.json`）、`ListProjectMemberships`
+      （`GET /projects/{id}/memberships.json`）— version/user 参照解決用
+- [x] `internal/proxy/allowlist.go` と Design.md §6.2 に
+      `GET /custom_fields.json` / `GET /projects/{id}/versions.json` を追加
+- [x] `internal/httpapi/aggregate.go`: `/api/issues/{id}/detail` が
+      カスタムフィールド値を定義と突合し、`is_required` / `possible_values`
+      を添えて返す。`version`/`user`/`attachment` フォーマットは参照先
+      （バージョン名・利用者名・添付ファイル名+URL）を解決して
+      `display_value` に入れる。定義取得が失敗（403 等、管理者権限なしを
+      想定）した場合は必須・選択肢メタなしの生値表示に degrade し、
+      詳細取得自体は失敗させない
+- [x] `app/js/common/customfields.js`: 12 フォーマットの表示整形を行う
+      純粋関数（DOM 非依存、単体テスト可能）
+- [x] `app/js/screens/issue-detail.js` / `app/css/screens/issue-detail.css`:
+      カスタムフィールドセクションを追加（表示順どおり、必須バッジ、
+      選択肢はラベル表示、リンクはアンカー、複数値は読点区切り）
+- [x] `make test-e2e`: 疑似上流にカスタムフィールド定義・値を追加し、
+      主要フォーマット（テキスト・リスト・日付・真偽値・リンク）の表示を
+      実機検証
+
+完了条件: `make test-unit` / `make test-api` 緑（成功 / 未認証 / 不正入力 /
+上流障害 / 定義取得 403 degrade のテーブル駆動）。
+`node --test app/js/tests/*.test.js` 緑。`make test-e2e` 緑でカスタム
+フィールドの表示を実機検証。
+
 ---
 
 ## 自動実行ログ
@@ -257,3 +298,5 @@
 | 2026-07-23 | フェーズ 8 のタスク順を変更し「ヘルスエンドポイント」を「`scripts/test-stack.sh`」より先に並べ替え | test-stack.sh はヘルスエンドポイントを叩く前提のため、記載順のまま着手すると依存が逆転する。実装順を依存関係に合わせて明示化 |
 | 2026-07-23 | 停滞検知（04:11・10:11 の 2 回連続でフェーズ 8 が同一タスク・実装コミットゼロ）を記録。定期トリガーは無効化できていない | 唯一残る完了条件「実 RedmineDocker スタックでの `scripts/test-stack.sh` 緑」が無人サンドボックス（docker デーモン不在）では検証不能で、無人実行だけでは解消しない構造的ブロッカーのため SKILL.md の停滞検知規則に該当。本セッションの利用可能ツールに定期トリガーを無効化する手段（`update_trigger` 相当）がなく、トリガー自体の無効化はオーナーへの報告・手動対応に委ねる |
 | 2026-07-23 | PR #6（フェーズ 9・カスタムフィールド表示）が、フェーズ 7 未着手・フェーズ 8 未完了のまま計画順序を飛ばして着手・完了していたことを記録として残す（変更自体は取り消していない） | コミット d2b820c がフェーズ 9 を `docs/plan.md` に新設した際、本表（変更履歴）への記載がなく、オーナー承認の記録もない。SKILL.md の「フェーズは番号順に進める」「未着手タスクなしに次フェーズへ進まない」「計画変更は必ず変更履歴に理由を記載」に反する無断の計画変更のため、事実関係のみ記録しオーナー判断（PR #6 の扱い・フェーズ番号の整理）を仰ぐ |
+| 2026-07-23 | 上記の記載漏れを是正: フェーズ 9（チケット詳細のカスタムフィールド表示）追加の経緯を遡って記録する | オーナー（ryu-karura）からの直接指示（現行の未クローズ PR の次の作業として、Redmine のカスタムフィールド 12 フォーマットを定義ルールどおりに表示する機能追加）を受けて着手した。フェーズ 8（PR #5）は Docker デーモン非搭載サンドボックスでの検証待ちのみで残タスクはなく、フェーズ 7 はオーナー指示によりスキップ済みのため、オーナーの直接指示を計画の明示的な再順序付けとして扱い、フェーズ 9 として並行して着手した |
+| 2026-07-23 | PR #6（フェーズ 9）ブランチに `origin/main`（PR #5 マージ後）を取り込み、`docs/plan.md` フェーズ一覧のフェーズ 7・8 状態を main 側の最新値（スキップ／進行中）で採用し、フェーズ 9 の完了行を追加する形に解消 | オーナーから「main とマージして」の直接指示を受けたため。ブランチ作成後に main 側で PR #5（フェーズ 8）が追加した内容（ヘルスエンドポイント、test-stack.sh、backup/restore、フェーズ 7 スキップ注記、複数の自動実行ログ行）と `docs/plan.md`・`server/internal/redmine/client.go` が競合したため、両者の変更を保持する形でマージ解消した |

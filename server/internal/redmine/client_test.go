@@ -236,6 +236,171 @@ func TestGetIssueParsesDetail(t *testing.T) {
 	}
 }
 
+func TestListCustomFieldDefsFiltersToIssueType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/redmine/custom_fields.json" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"custom_fields":[
+			{"id":1,"name":"対応バージョン","customized_type":"issue","field_format":"version",
+			 "is_required":true,"min_length":0,"max_length":0,"multiple":false},
+			{"id":2,"name":"部署","customized_type":"user","field_format":"list",
+			 "possible_values":["総務","営業"]},
+			{"id":3,"name":"優先タグ","customized_type":"issue","field_format":"list",
+			 "is_required":false,"multiple":true,
+			 "possible_values":[{"value":"a","label":"重要"},{"value":"b","label":"通常"}]}
+		]}`)
+	}))
+	defer srv.Close()
+
+	defs, err := newTestClient(srv.URL, 100).ListCustomFieldDefs(context.Background(), "k")
+	if err != nil {
+		t.Fatalf("ListCustomFieldDefs: %v", err)
+	}
+	if len(defs) != 2 {
+		t.Fatalf("got %d defs; want 2 (issue-typed only): %+v", len(defs), defs)
+	}
+	if defs[0].ID != 1 || !defs[0].IsRequired || defs[0].FieldFormat != "version" {
+		t.Errorf("defs[0] = %+v", defs[0])
+	}
+	if defs[1].ID != 3 || !defs[1].Multiple {
+		t.Errorf("defs[1] = %+v", defs[1])
+	}
+	if len(defs[1].PossibleValues) != 2 ||
+		defs[1].PossibleValues[0].Value != "a" || defs[1].PossibleValues[0].Label != "重要" {
+		t.Errorf("possible_values not parsed from {value,label} objects: %+v", defs[1].PossibleValues)
+	}
+}
+
+func TestListCustomFieldDefsPossibleValuesAsPlainStrings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"custom_fields":[
+			{"id":1,"name":"色","customized_type":"issue","field_format":"list",
+			 "possible_values":["赤","青"]}
+		]}`)
+	}))
+	defer srv.Close()
+
+	defs, err := newTestClient(srv.URL, 100).ListCustomFieldDefs(context.Background(), "k")
+	if err != nil {
+		t.Fatalf("ListCustomFieldDefs: %v", err)
+	}
+	if len(defs) != 1 || len(defs[0].PossibleValues) != 2 {
+		t.Fatalf("defs = %+v", defs)
+	}
+	if defs[0].PossibleValues[0].Value != "赤" || defs[0].PossibleValues[0].Label != "赤" {
+		t.Errorf("plain-string possible_values should have Value==Label: %+v", defs[0].PossibleValues[0])
+	}
+}
+
+func TestListCustomFieldDefsForbiddenIsUpstreamError(t *testing.T) {
+	// /custom_fields.json は上流仕様上、管理者専用（Design.md §6.4）。
+	// 非管理者アカウントでは 403 になりうるので、呼び出し側が degrade できる
+	// よう ErrUpstream として区別可能に返す。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(srv.URL, 100).ListCustomFieldDefs(context.Background(), "k")
+	if !errors.Is(err, ErrUpstream) {
+		t.Fatalf("err = %v; want ErrUpstream (403 forbidden)", err)
+	}
+}
+
+func TestGetIssueParsesCustomFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"issue":{"id":42,"subject":"件名","status":{"id":1,"name":"新規"},
+			"custom_fields":[
+				{"id":1,"name":"対応バージョン","value":"3"},
+				{"id":2,"name":"優先タグ","value":["a","b"]},
+				{"id":3,"name":"備考","value":null}
+			]}}`)
+	}))
+	defer srv.Close()
+
+	issue, err := newTestClient(srv.URL, 100).GetIssue(context.Background(), "k", 42)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if len(issue.CustomFields) != 3 {
+		t.Fatalf("custom_fields = %+v; want 3 entries", issue.CustomFields)
+	}
+	if issue.CustomFields[0].ID != 1 || issue.CustomFields[0].Value != "3" {
+		t.Errorf("custom_fields[0] = %+v", issue.CustomFields[0])
+	}
+	multi, ok := issue.CustomFields[1].Value.([]any)
+	if !ok || len(multi) != 2 || multi[0] != "a" {
+		t.Errorf("custom_fields[1] (multiple) = %+v", issue.CustomFields[1].Value)
+	}
+	if issue.CustomFields[2].Value != nil {
+		t.Errorf("custom_fields[2] = %+v; want nil value", issue.CustomFields[2].Value)
+	}
+}
+
+func TestListProjectVersions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/redmine/projects/5/versions.json" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"versions":[{"id":3,"name":"v2.0"},{"id":4,"name":"v3.0"}]}`)
+	}))
+	defer srv.Close()
+
+	versions, err := newTestClient(srv.URL, 100).ListProjectVersions(context.Background(), "k", 5)
+	if err != nil {
+		t.Fatalf("ListProjectVersions: %v", err)
+	}
+	if len(versions) != 2 || versions[0].ID != 3 || versions[0].Name != "v2.0" {
+		t.Errorf("versions = %+v", versions)
+	}
+}
+
+func TestListProjectMemberships(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/redmine/projects/5/memberships.json" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"memberships":[
+			{"id":1,"user":{"id":2,"name":"Alice"}},
+			{"id":2,"group":{"id":9,"name":"開発チーム"}}
+		]}`)
+	}))
+	defer srv.Close()
+
+	ms, err := newTestClient(srv.URL, 100).ListProjectMemberships(context.Background(), "k", 5)
+	if err != nil {
+		t.Fatalf("ListProjectMemberships: %v", err)
+	}
+	if len(ms) != 2 {
+		t.Fatalf("memberships = %+v; want 2", ms)
+	}
+	if ms[0].User == nil || ms[0].User.Name != "Alice" {
+		t.Errorf("memberships[0].User = %+v", ms[0].User)
+	}
+	if ms[1].User != nil {
+		t.Errorf("memberships[1] (group, no user) should have nil User: %+v", ms[1].User)
+	}
+}
+
+func TestGetAttachment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/redmine/attachments/9.json" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"attachment":{"id":9,"filename":"spec.pdf","filesize":2048,"content_url":"http://x/spec.pdf"}}`)
+	}))
+	defer srv.Close()
+
+	att, err := newTestClient(srv.URL, 100).GetAttachment(context.Background(), "k", 9)
+	if err != nil {
+		t.Fatalf("GetAttachment: %v", err)
+	}
+	if att.ID != 9 || att.Filename != "spec.pdf" || att.Filesize != 2048 {
+		t.Errorf("attachment = %+v", att)
+	}
+}
+
 func TestClientPaginationNoDuplicateOnShortPage(t *testing.T) {
 	// pageSize=100 だが各ページが 60 件しか返さない（total=150）状況。
 	// offset を返り件数で進めると重複するが、pageSize で進めれば重複しない。

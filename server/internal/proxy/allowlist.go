@@ -31,7 +31,9 @@ var allowlist = compileRules([]struct{ method, pattern string }{
 	{http.MethodGet, "/trackers.json"},
 	{http.MethodGet, "/enumerations/issue_priorities.json"},
 	{http.MethodGet, "/projects/{id}/memberships.json"},
+	{http.MethodGet, "/projects/{id}/versions.json"},
 	{http.MethodGet, "/attachments/{id}.json"},
+	{http.MethodGet, "/custom_fields.json"},
 	// 注意: /my/account.json はここに載せない。応答本文に api_key が
 	// 含まれ、中継すると §9-1（API キーをブラウザに渡さない）に反する。
 	// 初回紐付けの本人確認は internal/auth の bootstrap がサーバー内で

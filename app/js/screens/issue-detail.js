@@ -4,6 +4,7 @@
 
 import { apiGetJson, apiPutJson, ApiError } from '../common/api.js';
 import { issuePatch, issueBadges, assigneeLabel } from '../common/issuefmt.js';
+import { formatCustomFieldValue, requiredLabel } from '../common/customfields.js';
 import {
   escapeHtml, errorMessage, formatDateTime, dueRemainingLabel, dueDateSeverity,
 } from '../common/utils.js';
@@ -102,6 +103,8 @@ export async function initIssueDetail(section, params) {
           </dd></div>
         </dl>
 
+        ${renderCustomFields(issue.custom_fields)}
+
         <fieldset class="edit-row">
           <legend class="visually-hidden">属性を編集</legend>
           <label>状態 ${select('editStatus', optionList(meta.statuses, issue.status && issue.status.id))}</label>
@@ -178,6 +181,33 @@ function optionList(list, selectedId) {
 }
 function opt(value, label, selected) {
   return `<option value="${escapeHtml(value)}"${selected ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+}
+
+// renderCustomFields はカスタムフィールドの一覧を Redmine が返す表示順の
+// まま描画する（Design.md §7.8）。値がなければ何も表示しない。
+function renderCustomFields(fields) {
+  if (!fields || fields.length === 0) return '';
+  return `<section class="detail-section custom-fields">
+    <h2>カスタムフィールド</h2>
+    <dl class="attr-list">${fields.map(renderCustomField).join('')}</dl>
+  </section>`;
+}
+
+function renderCustomField(field) {
+  const r = formatCustomFieldValue(field);
+  const req = requiredLabel(field);
+  let value;
+  if (r.kind === 'link') {
+    value = `<a href="${escapeHtml(r.href)}" target="_blank" rel="noopener">${escapeHtml(r.text)}</a>`;
+  } else if (r.kind === 'multiline') {
+    value = `<span class="cf-multiline">${escapeHtml(r.text)}</span>`;
+  } else {
+    value = escapeHtml(r.text);
+  }
+  return `<div class="attr cf-attr">
+    <dt>${escapeHtml(field.name || '')}${req ? ` <span class="badge cf-required">${escapeHtml(req)}</span>` : ''}</dt>
+    <dd>${value}</dd>
+  </div>`;
 }
 
 function renderAttachments(atts) {
