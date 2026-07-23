@@ -80,13 +80,23 @@ type Issue struct {
 	Parent      *struct {
 		ID int `json:"id"`
 	} `json:"parent,omitempty"`
-	StartDate   string       `json:"start_date,omitempty"`
-	DueDate     string       `json:"due_date,omitempty"`
-	DoneRatio   int          `json:"done_ratio"`
-	CreatedOn   string       `json:"created_on,omitempty"`
-	UpdatedOn   string       `json:"updated_on,omitempty"`
-	Journals    []Journal    `json:"journals,omitempty"`
-	Attachments []Attachment `json:"attachments,omitempty"`
+	StartDate    string             `json:"start_date,omitempty"`
+	DueDate      string             `json:"due_date,omitempty"`
+	DoneRatio    int                `json:"done_ratio"`
+	CreatedOn    string             `json:"created_on,omitempty"`
+	UpdatedOn    string             `json:"updated_on,omitempty"`
+	Journals     []Journal          `json:"journals,omitempty"`
+	Attachments  []Attachment       `json:"attachments,omitempty"`
+	CustomFields []CustomFieldValue `json:"custom_fields,omitempty"`
+}
+
+// CustomFieldValue はチケットに設定されたカスタムフィールドの値 1 件。
+// Value は素の値（文字列）、複数選択（配列）、未設定（null）のいずれも
+// そのまま受け取る（型定義は CustomFieldDef 側が持つ。Design.md §6.4）。
+type CustomFieldValue struct {
+	ID    int    `json:"id"`
+	Name  string `json:"name"`
+	Value any    `json:"value"`
 }
 
 type Journal struct {
@@ -298,7 +308,7 @@ func (c *Client) ListProjectIssues(ctx context.Context, apiKey string, projectID
 
 // CountOpenIssues はプロジェクト直下（サブプロジェクトを除く）の未完了チケット
 // 数を返す。件数だけが必要なので limit=1 として total_count のみを読む
-//（Design.md §7.6 のプロジェクト一覧右端の数字）。
+// （Design.md §7.6 のプロジェクト一覧右端の数字）。
 func (c *Client) CountOpenIssues(ctx context.Context, apiKey string, projectID int) (int, error) {
 	var page struct {
 		TotalCount int `json:"total_count"`

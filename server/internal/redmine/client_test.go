@@ -307,6 +307,36 @@ func TestListCustomFieldDefsForbiddenIsUpstreamError(t *testing.T) {
 	}
 }
 
+func TestGetIssueParsesCustomFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"issue":{"id":42,"subject":"件名","status":{"id":1,"name":"新規"},
+			"custom_fields":[
+				{"id":1,"name":"対応バージョン","value":"3"},
+				{"id":2,"name":"優先タグ","value":["a","b"]},
+				{"id":3,"name":"備考","value":null}
+			]}}`)
+	}))
+	defer srv.Close()
+
+	issue, err := newTestClient(srv.URL, 100).GetIssue(context.Background(), "k", 42)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if len(issue.CustomFields) != 3 {
+		t.Fatalf("custom_fields = %+v; want 3 entries", issue.CustomFields)
+	}
+	if issue.CustomFields[0].ID != 1 || issue.CustomFields[0].Value != "3" {
+		t.Errorf("custom_fields[0] = %+v", issue.CustomFields[0])
+	}
+	multi, ok := issue.CustomFields[1].Value.([]any)
+	if !ok || len(multi) != 2 || multi[0] != "a" {
+		t.Errorf("custom_fields[1] (multiple) = %+v", issue.CustomFields[1].Value)
+	}
+	if issue.CustomFields[2].Value != nil {
+		t.Errorf("custom_fields[2] = %+v; want nil value", issue.CustomFields[2].Value)
+	}
+}
+
 func TestClientPaginationNoDuplicateOnShortPage(t *testing.T) {
 	// pageSize=100 だが各ページが 60 件しか返さない（total=150）状況。
 	// offset を返り件数で進めると重複するが、pageSize で進めれば重複しない。

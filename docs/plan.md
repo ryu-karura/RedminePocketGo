@@ -224,7 +224,7 @@
       `ListCustomFieldDefs`（`GET /custom_fields.json`、
       `customized_type=="issue"` のみ抽出。`possible_values` は
       素の文字列・`{value,label}` オブジェクトの両方を受け付ける）
-- [ ] `internal/redmine`: `Issue.CustomFields []CustomFieldValue`
+- [x] `internal/redmine`: `Issue.CustomFields []CustomFieldValue`
       （id/name/value、value は文字列・配列どちらも許容）
 - [ ] `internal/redmine`: `ListProjectVersions`
       （`GET /projects/{id}/versions.json`）、`ListProjectMemberships`
