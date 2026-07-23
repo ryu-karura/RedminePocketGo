@@ -1,0 +1,123 @@
+# Stack Integration Test: 実 RedmineDocker 開発スタックとの疎通確認。
+#
+# ubuntu-latest ランナーには Docker デーモンが備わっているため、開発用の
+# サンドボックス（Docker デーモンなし）では検証できない
+# scripts/test-stack.sh を、ここで自動的に実行する
+# （CLAUDE.md §5、docs/plan.md フェーズ8の完了条件）。
+#
+# RedmineDocker リポジトリ自体（イメージ定義・compose 定義等）は checkout
+# して起動するのみで変更しない（CLAUDE.md §9-6）。REST API の有効化・
+# テストデータ投入は scripts/redmine-seed-testdata.sh が、起動中の
+# コンテナに対する操作としてのみ行う。
+name: Stack Integration Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      redminedocker_ref:
+        description: "ryu-karura/RedmineDocker の参照するブランチ/タグ/コミット"
+        required: false
+        default: "main"
+  schedule:
+    # 毎週火曜 03:00 JST（= 月曜 18:00 UTC）。実スタックとの疎通が
+    # 継続して緑であることを定期確認する。
+    - cron: "0 18 * * 1"
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "scripts/test-stack.sh"
+      - "scripts/redmine-seed-testdata.sh"
+      - ".github/workflows/stack-test.yml"
+      - "server/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/test-stack.sh"
+      - "scripts/redmine-seed-testdata.sh"
+      - ".github/workflows/stack-test.yml"
+      - "server/**"
+
+permissions:
+  contents: read
+
+# push と pull_request の両トリガーが同じコミットに対して起動するため
+# （同一ブランチに開いた PR がある状態での push）、二重実行を避ける。
+# 新しい push が来たら実行中の古いジョブは打ち切る（イメージビルドを
+# 含むため 1 回あたりが重く、二重・多重実行のコストが無視できない）。
+concurrency:
+  group: stack-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stack:
+    name: RedmineDocker 実スタックとの疎通確認
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout RedminePocketGo
+        uses: actions/checkout@v4
+
+      - name: Checkout RedmineDocker
+        uses: actions/checkout@v4
+        with:
+          repository: ryu-karura/RedmineDocker
+          ref: ${{ github.event.inputs.redminedocker_ref || 'main' }}
+          path: redminedocker
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+
+      - name: rmapp のシークレットを生成
+        run: bash scripts/generate-secrets.sh
+
+      - name: SQLite データディレクトリを作成
+        run: mkdir -p server/data
+
+      - name: RedmineDocker のシークレットを生成
+        working-directory: redminedocker
+        run: bash scripts/generate-secrets.sh
+
+      - name: RedmineDocker 開発スタックを起動
+        working-directory: redminedocker
+        run: docker compose -f compose.dev.yaml up --build -d
+
+      - name: redmine-web の healthy を待機
+        working-directory: redminedocker
+        run: |
+          for _ in $(seq 1 120); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' redmine-web 2>/dev/null || echo unknown)"
+            if [ "${status}" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "${status}" = "unhealthy" ]; then
+              echo "redmine-web unhealthy" >&2
+              docker logs redmine-web
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "redmine-web が healthy になりませんでした（タイムアウト）" >&2
+          docker logs redmine-web
+          exit 1
+
+      - name: REST API を有効化しテストデータを投入
+        id: seed
+        run: |
+          api_key="$(scripts/redmine-seed-testdata.sh | tail -1 | cut -d= -f2-)"
+          if [ -z "${api_key}" ]; then
+            echo "API キーを取得できませんでした" >&2
+            exit 1
+          fi
+          echo "::add-mask::${api_key}"
+          echo "api_key=${api_key}" >> "${GITHUB_OUTPUT}"
+
+      - name: scripts/test-stack.sh を実行
+        env:
+          RMAPP_STACK_API_KEY: ${{ steps.seed.outputs.api_key }}
+        run: scripts/test-stack.sh
+
+      - name: RedmineDocker スタックを後片付け
+        if: always()
+        working-directory: redminedocker
+        run: docker compose -f compose.dev.yaml down -v

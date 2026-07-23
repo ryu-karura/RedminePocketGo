@@ -392,6 +392,14 @@ RMAPP_STACK_API_KEY="取得した API キー" scripts/test-stack.sh
 既定で `server/config/config.yaml` を使います。別の設定を使う場合は
 `RMAPP_STACK_CONFIG` でパスを指定します。
 
+開発サンドボックスに Docker デーモンがなく手元で `scripts/test-stack.sh` を
+実行できない場合でも、GitHub Actions の `.github/workflows/stack-test.yml`
+（Stack Integration Test）が Docker デーモンを持つランナー上で
+RedmineDocker 開発スタックを起動し、`scripts/redmine-seed-testdata.sh` で
+REST API 有効化・テストデータ投入まで行った上で同じ確認を自動実行します
+（`workflow_dispatch` での手動実行、毎週の定期実行、関連ファイル変更時の
+push/pull_request で起動）。
+
 それ以外の項目（パスキー登録・ログイン、プロジェクト表示など）は
 ブラウザでの手動確認が必要です。手動で確認する場合は表のとおりです。
 
