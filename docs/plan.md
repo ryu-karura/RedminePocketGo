@@ -32,6 +32,7 @@
 | 6 | 業務画面（projects / issues / issue-detail / settings） | 完了 |
 | 7 | 端末紛失対策とセキュリティ強化 | 未着手 |
 | 8 | 統合テストと運用スクリプト | 未着手 |
+| 9 | チケット詳細のカスタムフィールド表示 | 進行中 |
 | — | 地図表示（Design.md §12） | 指示があるまで着手しない |
 
 状態は「未着手 / 進行中 / 完了」の 3 値。変更したら同じコミットで更新する。
@@ -210,6 +211,47 @@
 
 完了条件: RedmineDocker 開発スタックを起動した状態で
 `scripts/test-stack.sh` 緑。`shellcheck scripts/*.sh` 通過。
+
+## フェーズ 9: チケット詳細のカスタムフィールド表示
+
+目的: Redmine 上で定義された任意のカスタムフィールド（キー・バリュー
+リスト／テキスト／バージョン／ファイル／ユーザー／リスト／リンク／小数／
+整数／日付／真偽値／長いテキストの 12 フォーマット）を、Redmine の定義
+ルール（表示順、必須可否、長さ・上下限、選択肢）に従って `issue-detail`
+画面に表示する。編集（入力バリデーション）は対象外——本フェーズは表示のみ。
+
+- [ ] `internal/redmine`: `CustomFieldDef` / `PossibleValue` 型と
+      `ListCustomFieldDefs`（`GET /custom_fields.json`、
+      `customized_type=="issue"` のみ抽出。`possible_values` は
+      素の文字列・`{value,label}` オブジェクトの両方を受け付ける）
+- [ ] `internal/redmine`: `Issue.CustomFields []CustomFieldValue`
+      （id/name/value、value は文字列・配列どちらも許容）
+- [ ] `internal/redmine`: `ListProjectVersions`
+      （`GET /projects/{id}/versions.json`）、`ListProjectMemberships`
+      （`GET /projects/{id}/memberships.json`）— version/user 参照解決用
+- [ ] `internal/proxy/allowlist.go` と Design.md §6.2 に
+      `GET /custom_fields.json` / `GET /projects/{id}/versions.json` を追加
+- [ ] `internal/httpapi/aggregate.go`: `/api/issues/{id}/detail` が
+      カスタムフィールド値を定義と突合し、`is_required` / `possible_values`
+      を添えて返す。`version`/`user`/`attachment` フォーマットは参照先
+      （バージョン名・利用者名・添付ファイル名+URL）を解決して
+      `display_value` に入れる。定義取得が失敗（403 等、管理者権限なしを
+      想定）した場合は必須・選択肢メタなしの生値表示に degrade し、
+      詳細取得自体は失敗させない
+- [ ] `app/js/common/customfields.js`: 12 フォーマットの表示整形を行う
+      純粋関数（DOM 非依存、単体テスト可能）
+- [ ] `app/js/screens/issue-detail.js` / `app/css/screens/issue-detail.css`:
+      カスタムフィールドセクションを追加（表示順どおり、必須バッジ、
+      選択肢はラベル表示、リンクはアンカー、ファイルはダウンロードリンク
+      + サイズ、複数値はカンマ区切り）
+- [ ] `make test-e2e`: 疑似上流にカスタムフィールド定義・値を追加し、
+      主要フォーマット（テキスト・リスト・日付・真偽値・リンク）の表示を
+      実機検証
+
+完了条件: `make test-unit` / `make test-api` 緑（成功 / 未認証 / 不正入力 /
+上流障害 / 定義取得 403 degrade のテーブル駆動）。
+`node --test app/js/tests/*.test.js` 緑。`make test-e2e` 緑でカスタム
+フィールドの表示を実機検証。
 
 ---
 
