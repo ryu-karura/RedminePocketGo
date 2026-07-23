@@ -235,6 +235,78 @@ func TestGetIssueParsesDetail(t *testing.T) {
 	}
 }
 
+func TestListCustomFieldDefsFiltersToIssueType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/redmine/custom_fields.json" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"custom_fields":[
+			{"id":1,"name":"対応バージョン","customized_type":"issue","field_format":"version",
+			 "is_required":true,"min_length":0,"max_length":0,"multiple":false},
+			{"id":2,"name":"部署","customized_type":"user","field_format":"list",
+			 "possible_values":["総務","営業"]},
+			{"id":3,"name":"優先タグ","customized_type":"issue","field_format":"list",
+			 "is_required":false,"multiple":true,
+			 "possible_values":[{"value":"a","label":"重要"},{"value":"b","label":"通常"}]}
+		]}`)
+	}))
+	defer srv.Close()
+
+	defs, err := newTestClient(srv.URL, 100).ListCustomFieldDefs(context.Background(), "k")
+	if err != nil {
+		t.Fatalf("ListCustomFieldDefs: %v", err)
+	}
+	if len(defs) != 2 {
+		t.Fatalf("got %d defs; want 2 (issue-typed only): %+v", len(defs), defs)
+	}
+	if defs[0].ID != 1 || !defs[0].IsRequired || defs[0].FieldFormat != "version" {
+		t.Errorf("defs[0] = %+v", defs[0])
+	}
+	if defs[1].ID != 3 || !defs[1].Multiple {
+		t.Errorf("defs[1] = %+v", defs[1])
+	}
+	if len(defs[1].PossibleValues) != 2 ||
+		defs[1].PossibleValues[0].Value != "a" || defs[1].PossibleValues[0].Label != "重要" {
+		t.Errorf("possible_values not parsed from {value,label} objects: %+v", defs[1].PossibleValues)
+	}
+}
+
+func TestListCustomFieldDefsPossibleValuesAsPlainStrings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"custom_fields":[
+			{"id":1,"name":"色","customized_type":"issue","field_format":"list",
+			 "possible_values":["赤","青"]}
+		]}`)
+	}))
+	defer srv.Close()
+
+	defs, err := newTestClient(srv.URL, 100).ListCustomFieldDefs(context.Background(), "k")
+	if err != nil {
+		t.Fatalf("ListCustomFieldDefs: %v", err)
+	}
+	if len(defs) != 1 || len(defs[0].PossibleValues) != 2 {
+		t.Fatalf("defs = %+v", defs)
+	}
+	if defs[0].PossibleValues[0].Value != "赤" || defs[0].PossibleValues[0].Label != "赤" {
+		t.Errorf("plain-string possible_values should have Value==Label: %+v", defs[0].PossibleValues[0])
+	}
+}
+
+func TestListCustomFieldDefsForbiddenIsUpstreamError(t *testing.T) {
+	// /custom_fields.json は上流仕様上、管理者専用（Design.md §6.4）。
+	// 非管理者アカウントでは 403 になりうるので、呼び出し側が degrade できる
+	// よう ErrUpstream として区別可能に返す。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(srv.URL, 100).ListCustomFieldDefs(context.Background(), "k")
+	if !errors.Is(err, ErrUpstream) {
+		t.Fatalf("err = %v; want ErrUpstream (403 forbidden)", err)
+	}
+}
+
 func TestClientPaginationNoDuplicateOnShortPage(t *testing.T) {
 	// pageSize=100 だが各ページが 60 件しか返さない（total=150）状況。
 	// offset を返り件数で進めると重複するが、pageSize で進めれば重複しない。

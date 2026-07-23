@@ -111,6 +111,50 @@ type Status struct {
 	IsClosed bool   `json:"is_closed"`
 }
 
+// PossibleValue は list / key_value_list フォーマットの選択肢 1 件。
+// Redmine は素の文字列（値=ラベル）か `{"value":..,"label":..}` の
+// いずれかで返すため、両方を受け付ける（Design.md §6.4）。
+type PossibleValue struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+func (v *PossibleValue) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		v.Value, v.Label = s, s
+		return nil
+	}
+	var obj struct {
+		Value string `json:"value"`
+		Label string `json:"label"`
+	}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return fmt.Errorf("redmine: possible_value の解釈に失敗しました: %w", err)
+	}
+	v.Value = obj.Value
+	v.Label = obj.Label
+	if v.Label == "" {
+		v.Label = v.Value
+	}
+	return nil
+}
+
+// CustomFieldDef はカスタムフィールドの定義（表示順・必須可否・長さ/上下限・
+// 選択肢）。Redmine 上の並び順どおりにチケットへ返される値と id で突合する
+// （Design.md §6.4、§7.8）。
+type CustomFieldDef struct {
+	ID             int             `json:"id"`
+	Name           string          `json:"name"`
+	CustomizedType string          `json:"customized_type"`
+	FieldFormat    string          `json:"field_format"`
+	IsRequired     bool            `json:"is_required"`
+	Multiple       bool            `json:"multiple"`
+	MinLength      int             `json:"min_length"`
+	MaxLength      int             `json:"max_length"`
+	PossibleValues []PossibleValue `json:"possible_values,omitempty"`
+}
+
 // ---- 取得 ----
 
 // get は 1 リクエストを実行し JSON を v に読む。一時的な失敗（接続エラー、
@@ -303,6 +347,27 @@ func (c *Client) ListStatuses(ctx context.Context, apiKey string) ([]Status, err
 		return nil, err
 	}
 	return wrap.Statuses, nil
+}
+
+// ListCustomFieldDefs はカスタムフィールドの定義一覧を返す
+// （`customized_type=="issue"` のみに絞る）。上流仕様上、管理者権限が
+// 必要なエンドポイントのため、非管理者アカウントでは ErrUpstream（403）
+// になりうる——呼び出し側（httpapi）は定義なしの degrade 表示に切り替える
+// こと（Design.md §6.4）。
+func (c *Client) ListCustomFieldDefs(ctx context.Context, apiKey string) ([]CustomFieldDef, error) {
+	var wrap struct {
+		CustomFields []CustomFieldDef `json:"custom_fields"`
+	}
+	if err := c.get(ctx, apiKey, "/custom_fields.json", nil, &wrap); err != nil {
+		return nil, err
+	}
+	out := make([]CustomFieldDef, 0, len(wrap.CustomFields))
+	for _, d := range wrap.CustomFields {
+		if d.CustomizedType == "issue" {
+			out = append(out, d)
+		}
+	}
+	return out, nil
 }
 
 // ListPriorities は優先度一覧を返す。

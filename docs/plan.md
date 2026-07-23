@@ -220,7 +220,7 @@
 ルール（表示順、必須可否、長さ・上下限、選択肢）に従って `issue-detail`
 画面に表示する。編集（入力バリデーション）は対象外——本フェーズは表示のみ。
 
-- [ ] `internal/redmine`: `CustomFieldDef` / `PossibleValue` 型と
+- [x] `internal/redmine`: `CustomFieldDef` / `PossibleValue` 型と
       `ListCustomFieldDefs`（`GET /custom_fields.json`、
       `customized_type=="issue"` のみ抽出。`possible_values` は
       素の文字列・`{value,label}` オブジェクトの両方を受け付ける）
