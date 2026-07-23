@@ -70,12 +70,25 @@ docker exec "${REDMINE_WEB_CONTAINER}" true >/dev/null 2>&1 \
   || die "${REDMINE_WEB_CONTAINER} コンテナに到達できません（起動・healthy を確認してください）"
 
 log "[1/4] REST API を有効化し、管理者のパスワード / API キーを確認します"
+# entrypoint.sh は SECRET_KEY_BASE を自分の bash プロセス内でのみ解決・export
+# しており（containers/redmine-web/entrypoint.sh の resolve_secret）、
+# コンテナのプロセス環境そのものには残らない。そのため docker exec で
+# 新規プロセスを起こすここでは、entrypoint.sh と同じ規約
+# （REDMINE_SECRET_KEY_BASE_FILE、compose.dev.yaml が設定するので
+# docker exec にもコンテナ環境として見えている）に従い、自前でシークレット
+# ファイルを読んで SECRET_KEY_BASE を用意してから rails runner を呼ぶ。
 runner_output="$(docker exec -i \
   -e "REDMINE_ADMIN_LOGIN=${REDMINE_ADMIN_LOGIN}" \
   -e "REDMINE_ADMIN_PASSWORD=${REDMINE_ADMIN_PASSWORD}" \
   -u redmine \
   "${REDMINE_WEB_CONTAINER}" \
-  bundle exec rails runner - <<'RUBY'
+  bash -c '
+    if [ -n "${REDMINE_SECRET_KEY_BASE_FILE:-}" ]; then
+      SECRET_KEY_BASE="$(cat "${REDMINE_SECRET_KEY_BASE_FILE}")"
+      export SECRET_KEY_BASE
+    fi
+    exec bundle exec rails runner -
+  ' <<'RUBY'
 login    = ENV.fetch('REDMINE_ADMIN_LOGIN')
 password = ENV.fetch('REDMINE_ADMIN_PASSWORD')
 
