@@ -382,6 +382,24 @@ func TestListProjectMemberships(t *testing.T) {
 	}
 }
 
+func TestGetAttachment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/redmine/attachments/9.json" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"attachment":{"id":9,"filename":"spec.pdf","filesize":2048,"content_url":"http://x/spec.pdf"}}`)
+	}))
+	defer srv.Close()
+
+	att, err := newTestClient(srv.URL, 100).GetAttachment(context.Background(), "k", 9)
+	if err != nil {
+		t.Fatalf("GetAttachment: %v", err)
+	}
+	if att.ID != 9 || att.Filename != "spec.pdf" || att.Filesize != 2048 {
+		t.Errorf("attachment = %+v", att)
+	}
+}
+
 func TestClientPaginationNoDuplicateOnShortPage(t *testing.T) {
 	// pageSize=100 だが各ページが 60 件しか返さない（total=150）状況。
 	// offset を返り件数で進めると重複するが、pageSize で進めれば重複しない。

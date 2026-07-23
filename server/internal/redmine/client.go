@@ -395,6 +395,18 @@ func (c *Client) ListCustomFieldDefs(ctx context.Context, apiKey string) ([]Cust
 	return out, nil
 }
 
+// GetAttachment は添付ファイル 1 件の情報を返す
+// （`attachment`（ファイル）フォーマットのカスタムフィールド参照解決用）。
+func (c *Client) GetAttachment(ctx context.Context, apiKey string, id int) (*Attachment, error) {
+	var wrap struct {
+		Attachment Attachment `json:"attachment"`
+	}
+	if err := c.get(ctx, apiKey, "/attachments/"+strconv.Itoa(id)+".json", nil, &wrap); err != nil {
+		return nil, err
+	}
+	return &wrap.Attachment, nil
+}
+
 // ListProjectVersions はプロジェクトのバージョン一覧を返す
 // （`version` フォーマットのカスタムフィールド参照解決用）。
 func (c *Client) ListProjectVersions(ctx context.Context, apiKey string, projectID int) ([]Version, error) {
