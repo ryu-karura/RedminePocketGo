@@ -114,7 +114,16 @@ func fakeRedmine(t *testing.T) (*httptest.Server, *upstreamState) {
 				`"status":{"id":%d,"name":%q},"priority":{"id":6,"name":"高"},"tracker":{"id":1,"name":"バグ"},`+
 				`"assigned_to":{"id":7,"name":"山田"},"due_date":"2026-08-15","done_ratio":60,`+
 				`"journals":[{"id":1,"notes":"初回の記録","user":{"id":7,"name":"山田"},"created_on":"2026-07-01T10:00:00Z"}],`+
-				`"attachments":[]}}`, sid, sname)
+				`"attachments":[],`+
+				// カスタムフィールド（表示検証用に主要フォーマットを一通り含める。
+				// text/list/bool/link/date。plan.md フェーズ 9）。
+				`"custom_fields":[`+
+				`{"id":10,"name":"備考","value":"1行目\n2行目"},`+
+				`{"id":11,"name":"優先タグ","value":"a"},`+
+				`{"id":12,"name":"承認済み","value":"1"},`+
+				`{"id":13,"name":"参考リンク","value":"https://example.com/spec"},`+
+				`{"id":14,"name":"対応期限メモ","value":"2026-09-01"}`+
+				`]}}`, sid, sname)
 			return
 		}
 		switch r.URL.Path {
@@ -203,6 +212,20 @@ func fakeRedmine(t *testing.T) (*httptest.Server, *upstreamState) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"issue_priorities":[`+
 				`{"id":3,"name":"低"},{"id":4,"name":"通常"},{"id":6,"name":"高"}]}`)
+		case "/custom_fields.json":
+			if state.isCredentialInvalid() || r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"custom_fields":[`+
+				`{"id":10,"name":"備考","customized_type":"issue","field_format":"text","is_required":false},`+
+				`{"id":11,"name":"優先タグ","customized_type":"issue","field_format":"list","is_required":true,`+
+				`"possible_values":[{"value":"a","label":"重要"},{"value":"b","label":"通常"}]},`+
+				`{"id":12,"name":"承認済み","customized_type":"issue","field_format":"bool"},`+
+				`{"id":13,"name":"参考リンク","customized_type":"issue","field_format":"link"},`+
+				`{"id":14,"name":"対応期限メモ","customized_type":"issue","field_format":"date"}`+
+				`]}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -436,6 +459,22 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 				`&& s.indexOf('進行中')>=0;})()`,
 			nil, chromedp.WithPollingTimeout(20*time.Second)),
 		shot("08-issue-detail.png"),
+		// カスタムフィールド（plan.md フェーズ 9）: 表示順どおりに描画され、
+		// 長いテキストは改行保持、リストは選択肢ラベルに解決、真偽値は
+		// 「はい」、日付・必須バッジが正しく出ることを確認する。
+		chromedp.Poll(
+			`(function(){var t=document.querySelector('.screen.active .custom-fields');if(!t)return false;`+
+				`var s=t.innerText;return s.indexOf('備考')>=0 && s.indexOf('1行目')>=0 && s.indexOf('2行目')>=0 `+
+				`&& s.indexOf('優先タグ')>=0 && s.indexOf('重要')>=0 && s.indexOf('必須')>=0 `+
+				`&& s.indexOf('承認済み')>=0 && s.indexOf('はい')>=0 `+
+				`&& s.indexOf('対応期限メモ')>=0 && s.indexOf('2026-09-01')>=0;})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		// リンクフォーマットはクリック可能なアンカーになる。
+		chromedp.Poll(
+			`(function(){var a=document.querySelector('.screen.active .custom-fields a[href="https://example.com/spec"]');`+
+				`return !!a && a.getAttribute('target')==='_blank';})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("08b-issue-detail-custom-fields.png"),
 		// 状態を「完了」(id=5) に変更 → PUT → 再取得でバッジが「完了」になる。
 		chromedp.Evaluate(
 			`(function(){var s=document.querySelector('.screen.active #editStatus');`+
