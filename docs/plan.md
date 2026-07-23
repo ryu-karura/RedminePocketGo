@@ -238,7 +238,7 @@
       `display_value` に入れる。定義取得が失敗（403 等、管理者権限なしを
       想定）した場合は必須・選択肢メタなしの生値表示に degrade し、
       詳細取得自体は失敗させない
-- [ ] `app/js/common/customfields.js`: 12 フォーマットの表示整形を行う
+- [x] `app/js/common/customfields.js`: 12 フォーマットの表示整形を行う
       純粋関数（DOM 非依存、単体テスト可能）
 - [ ] `app/js/screens/issue-detail.js` / `app/css/screens/issue-detail.css`:
       カスタムフィールドセクションを追加（表示順どおり、必須バッジ、
