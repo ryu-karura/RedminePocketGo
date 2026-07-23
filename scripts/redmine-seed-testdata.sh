@@ -31,7 +31,7 @@
 # 一致させている）:
 #   REDMINE_WEB_CONTAINER            既定 redmine-web
 #   REDMINE_ADMIN_LOGIN              既定 admin
-#   REDMINE_ADMIN_PASSWORD           既定は自動生成（英数字24文字）
+#   REDMINE_ADMIN_PASSWORD           既定は自動生成（16進32文字）
 #   REDMINE_BASE_URL                 既定 http://localhost:8080
 #   REDMINE_SUBURI                   既定 /redmine
 #   REDMINE_TEST_PROJECT_IDENTIFIER  既定 rmapp-ci-testdata
@@ -39,7 +39,7 @@
 # 前提:
 #   - redmine-web コンテナが healthy な状態で起動済みであること
 #     （docker compose -f compose.dev.yaml up --build -d）
-#   - docker, curl コマンドが利用できること
+#   - docker, curl, openssl コマンドが利用できること
 
 set -euo pipefail
 
@@ -48,6 +48,7 @@ die() { log "エラー: $*"; exit 1; }
 
 command -v docker >/dev/null 2>&1 || die "docker が見つかりません"
 command -v curl >/dev/null 2>&1 || die "curl が見つかりません"
+command -v openssl >/dev/null 2>&1 || die "openssl が見つかりません"
 
 REDMINE_WEB_CONTAINER="${REDMINE_WEB_CONTAINER:-redmine-web}"
 REDMINE_ADMIN_LOGIN="${REDMINE_ADMIN_LOGIN:-admin}"
@@ -56,9 +57,14 @@ REDMINE_SUBURI="${REDMINE_SUBURI:-/redmine}"
 REDMINE_TEST_PROJECT_IDENTIFIER="${REDMINE_TEST_PROJECT_IDENTIFIER:-rmapp-ci-testdata}"
 
 if [[ -z "${REDMINE_ADMIN_PASSWORD:-}" ]]; then
-  # 記号なし英数字24文字（generate-secrets.sh と同方式。シェルクオート事故を回避）
-  REDMINE_ADMIN_PASSWORD="$(head -c 4096 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | head -c 24)"
+  # 16進32文字。`head -c N` で打ち切るパイプは、書き込み側が SIGPIPE を
+  # 受けて pipefail 下でパイプライン全体を失敗させることがあるため使わない
+  # （出力長を打ち切らずに済む openssl rand を使う）。
+  REDMINE_ADMIN_PASSWORD="$(openssl rand -hex 16)"
 fi
+# CI ログに平文で出た場合でも隠す（GitHub Actions のワークフローコマンド。
+# ローカル実行時はそのまま無害な行として扱われる）。
+printf '::add-mask::%s\n' "${REDMINE_ADMIN_PASSWORD}" >&2
 
 docker exec "${REDMINE_WEB_CONTAINER}" true >/dev/null 2>&1 \
   || die "${REDMINE_WEB_CONTAINER} コンテナに到達できません（起動・healthy を確認してください）"
@@ -88,8 +94,15 @@ puts "API_KEY=#{user.api_key}"
 RUBY
 )" || die "rails runner の実行に失敗しました"
 
-ADMIN_API_KEY="$(printf '%s\n' "${runner_output}" | grep '^API_KEY=' | tail -1 | cut -d= -f2-)"
-[[ -n "${ADMIN_API_KEY}" ]] || die "API キーを取得できませんでした（rails runner の出力: ${runner_output}）"
+ADMIN_API_KEY="$(printf '%s\n' "${runner_output}" | grep '^API_KEY=' | tail -1 | cut -d= -f2- || true)"
+if [[ -z "${ADMIN_API_KEY}" ]]; then
+  # runner_output に API キーの行が含まれている可能性があるため、そのまま
+  # ログへ出さず、値部分を伏せてから提示する（CLAUDE.md §4.6「API キーを
+  # 出力しない」）。
+  sanitized_output="$(printf '%s\n' "${runner_output}" | sed -E 's/^(API_KEY=).*/\1[redacted]/')"
+  die "API キーを取得できませんでした（rails runner の出力: ${sanitized_output}）"
+fi
+printf '::add-mask::%s\n' "${ADMIN_API_KEY}" >&2
 
 api_get()  { curl -fsS -H "X-Redmine-API-Key: ${ADMIN_API_KEY}" "${REDMINE_BASE_URL}${REDMINE_SUBURI}$1"; }
 api_post() { curl -fsS -H "X-Redmine-API-Key: ${ADMIN_API_KEY}" -H 'Content-Type: application/json' -d "$2" "${REDMINE_BASE_URL}${REDMINE_SUBURI}$1"; }
@@ -121,24 +134,29 @@ fi
 [[ -n "${PROJECT_ID}" ]] || die "プロジェクト ID を取得できませんでした（応答: ${project_json}）"
 
 log "[4/4] テスト用チケットを確認・投入します"
+DESIRED_ISSUE_COUNT=3
 existing_count="$(api_get "/issues.json?project_id=${PROJECT_ID}&status_id=*&limit=1" \
   | grep -o '"total_count":[0-9]*' | head -1 | cut -d: -f2 || true)"
 existing_count="${existing_count:-0}"
 
-if [[ "${existing_count}" -gt 0 ]]; then
+if [[ "${existing_count}" -ge "${DESIRED_ISSUE_COUNT}" ]]; then
   log "既存のチケット ${existing_count} 件を再利用します（新規投入はスキップ）"
 else
+  # 途中失敗（一部だけ作成済み）で再実行しても、既定件数まで補充する
+  # （件数だけを条件にすることで、特定の件名の有無に依存しない）。
+  to_create=$(( DESIRED_ISSUE_COUNT - existing_count ))
   TRACKER_ID="$(api_get "/trackers.json" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2 || true)"
   [[ -n "${TRACKER_ID}" ]] || die "トラッカーを取得できませんでした"
 
-  subjects=("疎通確認用チケット1（新規）" "疎通確認用チケット2（進行中）" "疎通確認用チケット3（完了）")
-  for subject in "${subjects[@]}"; do
+  log "テスト用チケットを ${to_create} 件投入します（既存 ${existing_count} 件）"
+  for n in $(seq 1 "${to_create}"); do
+    subject="疎通確認用チケット（自動投入 $(( existing_count + n ))）"
     api_post "/issues.json" "$(cat <<JSON
 {"issue":{"project_id":${PROJECT_ID},"tracker_id":${TRACKER_ID},"subject":"${subject}"}}
 JSON
 )" >/dev/null || die "チケットの作成に失敗しました（${subject}）"
   done
-  log "テスト用チケットを ${#subjects[@]} 件投入しました"
+  log "テスト用チケットを ${to_create} 件投入しました"
 fi
 
 echo "API_KEY=${ADMIN_API_KEY}"

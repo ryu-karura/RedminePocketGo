@@ -37,6 +37,9 @@ on:
       - ".github/workflows/stack-test.yml"
       - "server/**"
 
+permissions:
+  contents: read
+
 jobs:
   stack:
     name: RedmineDocker 実スタックとの疎通確認
