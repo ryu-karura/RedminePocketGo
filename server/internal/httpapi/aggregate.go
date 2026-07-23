@@ -24,6 +24,10 @@ type Aggregator interface {
 	ListTrackers(ctx context.Context, apiKey string) ([]redmine.Ref, error)
 	ListStatuses(ctx context.Context, apiKey string) ([]redmine.Status, error)
 	ListPriorities(ctx context.Context, apiKey string) ([]redmine.Ref, error)
+	ListCustomFieldDefs(ctx context.Context, apiKey string) ([]redmine.CustomFieldDef, error)
+	ListProjectVersions(ctx context.Context, apiKey string, projectID int) ([]redmine.Version, error)
+	ListProjectMemberships(ctx context.Context, apiKey string, projectID int) ([]redmine.Membership, error)
+	GetAttachment(ctx context.Context, apiKey string, id int) (*redmine.Attachment, error)
 }
 
 // KeyProvider は利用者の復号済み API キーを返し、上流 401 時に無効化する。
@@ -203,6 +207,15 @@ func (h *AggregateHandler) issuesTree(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]any{"issues": redmine.BuildIssueTree(issues)})
 }
 
+// issueDetailResponse はチケット詳細のレスポンス形。CustomFields は
+// redmine.Issue.CustomFields（生値）を、定義突合・参照解決済みの
+// redmine.ResolvedCustomField 列で上書きする（同名 JSON タグは浅い方が
+// 勝つ Go の埋め込みルールを利用）。
+type issueDetailResponse struct {
+	redmine.Issue
+	CustomFields []redmine.ResolvedCustomField `json:"custom_fields,omitempty"`
+}
+
 func (h *AggregateHandler) issueDetail(w http.ResponseWriter, r *http.Request) {
 	userID, apiKey, ok := h.resolve(w, r)
 	if !ok {
@@ -218,7 +231,124 @@ func (h *AggregateHandler) issueDetail(w http.ResponseWriter, r *http.Request) {
 		h.writeUpstream(w, r, userID, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, map[string]any{"issue": issue})
+
+	defs := h.customFieldDefs(r.Context(), userID, apiKey)
+	merged := redmine.MergeCustomFields(issue.CustomFields, defs)
+	if err := h.resolveCustomFieldRefs(r.Context(), userID, apiKey, issue.Project.ID, merged); err != nil {
+		h.writeUpstream(w, r, userID, err)
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]any{"issue": issueDetailResponse{Issue: *issue, CustomFields: merged}})
+}
+
+// resolveCustomFieldRefs は version/user/attachment フォーマットの値
+// （参照先の ID）を、対応するプロジェクトのバージョン一覧・メンバー一覧・
+// 添付情報から人が読める名前へ解決する（Design.md §7.8）。参照先の一覧
+// 取得自体が上流 401 の場合のみ呼び出し元へ伝播し（再紐付けを促す）、
+// それ以外の障害は当該フィールドを生値表示のまま残して続行する
+// （チケット詳細のキャッシュはない——Design.md §6.6——ので、
+// enrichOpenCounts のような「中断はキャッシュしない」配慮は不要）。
+func (h *AggregateHandler) resolveCustomFieldRefs(ctx context.Context, userID, apiKey string, projectID int, fields []redmine.ResolvedCustomField) error {
+	var needVersions, needUsers, needAttachments bool
+	for _, f := range fields {
+		switch f.FieldFormat {
+		case "version":
+			needVersions = true
+		case "user":
+			needUsers = true
+		case "attachment":
+			needAttachments = true
+		}
+	}
+
+	versionNames := map[string]string{}
+	if needVersions {
+		versions, err := h.Redmine.ListProjectVersions(ctx, apiKey, projectID)
+		if err != nil {
+			if errors.Is(err, redmine.ErrUnauthorized) {
+				return err
+			}
+			h.logErr("custom field version lookup failed; showing raw value", userID, err)
+		}
+		for _, v := range versions {
+			versionNames[strconv.Itoa(v.ID)] = v.Name
+		}
+	}
+
+	userNames := map[string]string{}
+	if needUsers {
+		members, err := h.Redmine.ListProjectMemberships(ctx, apiKey, projectID)
+		if err != nil {
+			if errors.Is(err, redmine.ErrUnauthorized) {
+				return err
+			}
+			h.logErr("custom field user lookup failed; showing raw value", userID, err)
+		}
+		for _, m := range members {
+			if m.User != nil {
+				userNames[strconv.Itoa(m.User.ID)] = m.User.Name
+			}
+		}
+	}
+
+	attachmentNames := map[string]string{}
+	if needAttachments {
+		for _, f := range fields {
+			if f.FieldFormat != "attachment" {
+				continue
+			}
+			for _, raw := range redmine.RawCustomFieldValues(f.Value) {
+				if _, done := attachmentNames[raw]; done {
+					continue
+				}
+				attID, convErr := strconv.Atoi(raw)
+				if convErr != nil {
+					continue
+				}
+				att, err := h.Redmine.GetAttachment(ctx, apiKey, attID)
+				if err != nil {
+					if errors.Is(err, redmine.ErrUnauthorized) {
+						return err
+					}
+					h.logErr("custom field attachment lookup failed; showing raw value", userID, err)
+					continue
+				}
+				attachmentNames[raw] = att.Filename
+			}
+		}
+	}
+
+	for i := range fields {
+		switch fields[i].FieldFormat {
+		case "version":
+			fields[i].ResolveDisplayValue(func(raw string) string { return versionNames[raw] })
+		case "user":
+			fields[i].ResolveDisplayValue(func(raw string) string { return userNames[raw] })
+		case "attachment":
+			fields[i].ResolveDisplayValue(func(raw string) string { return attachmentNames[raw] })
+		}
+	}
+	return nil
+}
+
+// customFieldDefs はカスタムフィールド定義を取得する（10 分キャッシュ、
+// ユーザー単位）。上流仕様上 `GET /custom_fields.json` は管理者権限が
+// 必要なため、非管理者アカウントでの失敗は定義なし（空スライス）として
+// 常に degrade する——呼び出し元を失敗させない（Design.md §6.4）。
+func (h *AggregateHandler) customFieldDefs(ctx context.Context, userID, apiKey string) []redmine.CustomFieldDef {
+	v, _ := h.Cache.customFieldDefs.get(userID, func() (any, error) {
+		defs, err := h.Redmine.ListCustomFieldDefs(ctx, apiKey)
+		if err != nil {
+			h.logErr("custom field defs unavailable; degrading to raw display", userID, err)
+			return []redmine.CustomFieldDef{}, nil
+		}
+		return defs, nil
+	})
+	if v == nil {
+		return nil
+	}
+	return v.([]redmine.CustomFieldDef)
 }
 
 func (h *AggregateHandler) meta(w http.ResponseWriter, r *http.Request) {
@@ -250,21 +380,28 @@ func (h *AggregateHandler) meta(w http.ResponseWriter, r *http.Request) {
 		h.writeUpstream(w, r, userID, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, v)
+	// カスタムフィールド定義は別キャッシュ・別 degrade ポリシー（§6.4）のため、
+	// 上の必須メタとは独立に取得しマージする。
+	out := v.(map[string]any)
+	out["customFields"] = h.customFieldDefs(r.Context(), userID, apiKey)
+	WriteJSON(w, http.StatusOK, out)
 }
 
 // ---- キャッシュ（ユーザー単位で分離。Design.md §6.6） ----
 
-// AggCache はメタとプロジェクトツリーのキャッシュを束ねる。
+// AggCache はメタ・プロジェクトツリー・カスタムフィールド定義のキャッシュを
+// 束ねる。
 type AggCache struct {
-	meta        *ttlCache
-	projectTree *ttlCache
+	meta            *ttlCache
+	projectTree     *ttlCache
+	customFieldDefs *ttlCache
 }
 
 func NewAggCache() *AggCache {
 	return &AggCache{
-		meta:        newTTLCache(10 * time.Minute),
-		projectTree: newTTLCache(60 * time.Second),
+		meta:            newTTLCache(10 * time.Minute),
+		projectTree:     newTTLCache(60 * time.Second),
+		customFieldDefs: newTTLCache(10 * time.Minute),
 	}
 }
 

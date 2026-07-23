@@ -13,16 +13,24 @@ import (
 )
 
 type fakeAggregator struct {
-	projects   []redmine.Project
-	issues     []redmine.Issue
-	issue      *redmine.Issue
-	trackers   []redmine.Ref
-	statuses   []redmine.Status
-	priorities []redmine.Ref
-	openCounts map[int]int // projectID -> 未完了件数
-	countErr   error       // 設定時、CountOpenIssues だけをこのエラーで失敗させる
-	err        error
-	calls      atomic.Int32
+	projects        []redmine.Project
+	issues          []redmine.Issue
+	issue           *redmine.Issue
+	trackers        []redmine.Ref
+	statuses        []redmine.Status
+	priorities      []redmine.Ref
+	openCounts      map[int]int // projectID -> 未完了件数
+	countErr        error       // 設定時、CountOpenIssues だけをこのエラーで失敗させる
+	customFieldDefs []redmine.CustomFieldDef
+	customFieldsErr error // 設定時、ListCustomFieldDefs だけをこのエラーで失敗させる
+	versions        []redmine.Version
+	versionsErr     error
+	memberships     []redmine.Membership
+	membershipsErr  error
+	attachments     map[int]redmine.Attachment
+	attachmentErr   error
+	err             error
+	calls           atomic.Int32
 }
 
 func (f *fakeAggregator) CountOpenIssues(_ context.Context, _ string, projectID int) (int, error) {
@@ -55,6 +63,31 @@ func (f *fakeAggregator) ListStatuses(context.Context, string) ([]redmine.Status
 }
 func (f *fakeAggregator) ListPriorities(context.Context, string) ([]redmine.Ref, error) {
 	return f.priorities, f.err
+}
+func (f *fakeAggregator) ListCustomFieldDefs(context.Context, string) ([]redmine.CustomFieldDef, error) {
+	if f.customFieldsErr != nil {
+		return nil, f.customFieldsErr
+	}
+	return f.customFieldDefs, f.err
+}
+func (f *fakeAggregator) ListProjectVersions(context.Context, string, int) ([]redmine.Version, error) {
+	if f.versionsErr != nil {
+		return nil, f.versionsErr
+	}
+	return f.versions, f.err
+}
+func (f *fakeAggregator) ListProjectMemberships(context.Context, string, int) ([]redmine.Membership, error) {
+	if f.membershipsErr != nil {
+		return nil, f.membershipsErr
+	}
+	return f.memberships, f.err
+}
+func (f *fakeAggregator) GetAttachment(_ context.Context, _ string, id int) (*redmine.Attachment, error) {
+	if f.attachmentErr != nil {
+		return nil, f.attachmentErr
+	}
+	att := f.attachments[id]
+	return &att, f.err
 }
 
 type fakeKeyLoader struct {
@@ -194,6 +227,151 @@ func TestIssueDetail(t *testing.T) {
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"detail"`) {
 		t.Errorf("status = %d body = %s", rec.Code, rec.Body)
+	}
+}
+
+func TestIssueDetailMergesCustomFieldDefs(t *testing.T) {
+	agg := &fakeAggregator{
+		issue: &redmine.Issue{ID: 42, Subject: "detail", Project: redmine.Ref{ID: 5},
+			CustomFields: []redmine.CustomFieldValue{{ID: 3, Name: "優先タグ", Value: "a"}}},
+		customFieldDefs: []redmine.CustomFieldDef{{
+			ID: 3, Name: "優先タグ", FieldFormat: "list", IsRequired: true,
+			PossibleValues: []redmine.PossibleValue{{Value: "a", Label: "重要"}},
+		}},
+	}
+	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d (%s)", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"is_required":true`, `"display_value":"重要"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q: %s", want, body)
+		}
+	}
+}
+
+func TestIssueDetailDegradesWhenCustomFieldDefsUnavailable(t *testing.T) {
+	// /custom_fields.json は管理者専用（Design.md §6.4）。403 相当のエラーでも
+	// チケット詳細自体は失敗させず、生値表示に degrade する。
+	agg := &fakeAggregator{
+		issue: &redmine.Issue{ID: 42, Subject: "detail", Project: redmine.Ref{ID: 5},
+			CustomFields: []redmine.CustomFieldValue{{ID: 3, Name: "備考", Value: "メモ"}}},
+		customFieldsErr: redmine.ErrUpstream,
+	}
+	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d; want 200 (degraded, not failed): %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"value":"メモ"`) {
+		t.Errorf("degraded body should still show raw value: %s", rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), `"is_required"`) {
+		t.Errorf("degraded body should not claim required metadata it doesn't have: %s", rec.Body)
+	}
+}
+
+func TestIssueDetailResolvesVersionUserAndAttachment(t *testing.T) {
+	agg := &fakeAggregator{
+		issue: &redmine.Issue{ID: 42, Subject: "detail", Project: redmine.Ref{ID: 5},
+			CustomFields: []redmine.CustomFieldValue{
+				{ID: 1, Name: "対応バージョン", Value: "3"},
+				{ID: 2, Name: "レビュー担当", Value: "7"},
+				{ID: 4, Name: "仕様書", Value: "9"},
+			}},
+		customFieldDefs: []redmine.CustomFieldDef{
+			{ID: 1, FieldFormat: "version"},
+			{ID: 2, FieldFormat: "user"},
+			{ID: 4, FieldFormat: "attachment"},
+		},
+		versions:    []redmine.Version{{ID: 3, Name: "v2.0"}},
+		memberships: []redmine.Membership{{ID: 1, User: &redmine.Ref{ID: 7, Name: "Alice"}}},
+		attachments: map[int]redmine.Attachment{9: {ID: 9, Filename: "spec.pdf", Filesize: 2048}},
+	}
+	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d (%s)", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"display_value":"v2.0"`, `"display_value":"Alice"`, `"display_value":"spec.pdf"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q: %s", want, body)
+		}
+	}
+}
+
+func TestIssueDetailReferenceLookupUnauthorizedIs409(t *testing.T) {
+	agg := &fakeAggregator{
+		issue: &redmine.Issue{ID: 42, Project: redmine.Ref{ID: 5},
+			CustomFields: []redmine.CustomFieldValue{{ID: 1, Value: "3"}}},
+		customFieldDefs: []redmine.CustomFieldDef{{ID: 1, FieldFormat: "version"}},
+		versionsErr:     redmine.ErrUnauthorized,
+	}
+	keys := &fakeKeyLoader{key: "k"}
+	mux := newAggMux(agg, keys)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
+	if rec.Code != 409 {
+		t.Errorf("status = %d; want 409 on upstream 401 during ref resolution", rec.Code)
+	}
+}
+
+func TestIssueDetailReferenceLookupOtherErrorDegrades(t *testing.T) {
+	// バージョン一覧の取得が一時障害でも、詳細取得自体は失敗させず生値表示にする。
+	agg := &fakeAggregator{
+		issue: &redmine.Issue{ID: 42, Project: redmine.Ref{ID: 5},
+			CustomFields: []redmine.CustomFieldValue{{ID: 1, Name: "対応バージョン", Value: "3"}}},
+		customFieldDefs: []redmine.CustomFieldDef{{ID: 1, FieldFormat: "version"}},
+		versionsErr:     redmine.ErrUpstream,
+	}
+	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d; want 200 (degraded): %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"value":"3"`) {
+		t.Errorf("degraded ref should still carry raw value: %s", rec.Body)
+	}
+}
+
+func TestMetaIncludesCustomFieldDefs(t *testing.T) {
+	agg := &fakeAggregator{
+		trackers:        []redmine.Ref{{ID: 1, Name: "Bug"}},
+		statuses:        []redmine.Status{{ID: 1, Name: "New"}},
+		priorities:      []redmine.Ref{{ID: 2, Name: "Normal"}},
+		customFieldDefs: []redmine.CustomFieldDef{{ID: 1, Name: "優先タグ", FieldFormat: "list"}},
+	}
+	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/meta", nil)))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "優先タグ") {
+		t.Errorf("status = %d body = %s; want customFields in meta", rec.Code, rec.Body)
+	}
+}
+
+func TestMetaDegradesWhenCustomFieldDefsUnavailable(t *testing.T) {
+	// 定義取得が 403 等で失敗しても /api/meta 全体は失敗させない（Design.md §6.4）。
+	agg := &fakeAggregator{
+		trackers:        []redmine.Ref{{ID: 1, Name: "Bug"}},
+		statuses:        []redmine.Status{{ID: 1, Name: "New"}},
+		priorities:      []redmine.Ref{{ID: 2, Name: "Normal"}},
+		customFieldsErr: redmine.ErrUpstream,
+	}
+	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/meta", nil)))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d; want 200 (degraded): %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "Bug") {
+		t.Errorf("other meta should still be present: %s", rec.Body)
 	}
 }
 
