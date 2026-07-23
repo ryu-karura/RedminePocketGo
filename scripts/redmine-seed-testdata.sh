@@ -39,7 +39,9 @@
 # 前提:
 #   - redmine-web コンテナが healthy な状態で起動済みであること
 #     （docker compose -f compose.dev.yaml up --build -d）
-#   - docker, curl, openssl コマンドが利用できること
+#   - docker, curl, openssl コマンドが利用できること（存在チェックあり）。
+#     加えて grep/sed/cut/tail/head/date/seq/cat などの POSIX 標準コマンドを
+#     前提とする（他の scripts/*.sh 同様、これらの存在チェックは行わない）
 
 set -euo pipefail
 
@@ -65,6 +67,15 @@ fi
 # CI ログに平文で出た場合でも隠す（GitHub Actions のワークフローコマンド。
 # ローカル実行時はそのまま無害な行として扱われる）。
 printf '::add-mask::%s\n' "${REDMINE_ADMIN_PASSWORD}" >&2
+
+# 対話端末から実行された場合のみ確認する（破壊的操作: 管理者パスワードの
+# 上書き、REST API の有効化。scripts/restore.sh の確認語方式に合わせる）。
+# CI（非対話実行、標準入力が端末でない）はそのまま続行する。
+if [[ -t 0 ]]; then
+  log "${REDMINE_WEB_CONTAINER} コンテナの REST API を有効化し、管理者（${REDMINE_ADMIN_LOGIN}）のパスワードを上書きします。"
+  read -rp "続行するには CONTINUE と入力してください: " confirm
+  [[ "${confirm}" == "CONTINUE" ]] || die "確認語が一致しないため中止しました"
+fi
 
 docker exec "${REDMINE_WEB_CONTAINER}" true >/dev/null 2>&1 \
   || die "${REDMINE_WEB_CONTAINER} コンテナに到達できません（起動・healthy を確認してください）"
