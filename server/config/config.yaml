@@ -45,6 +45,24 @@ redmine:
   maxRetries: 2
   maxConcurrency: 8
   pageSize: 100
+  # ブラウザから見える Redmine の起点 URL（/oauth/authorize への遷移に使う）。
+  # 空なら baseURL と同じ。コンテナ内部名で接続し公開 URL が別になる本番では必須
+  publicBaseURL: ""
+  # Redmine に登録した OAuth アプリケーション（管理 → アプリケーション。docs/Setup.md）。
+  # Redmine の API キーは一切使わない。Client Secret は値ではなくファイルで渡す
+  oauth:
+    clientId: "REPLACE_WITH_REDMINE_CLIENT_ID"   # 必須。Redmine が発行する Client ID
+    clientSecretFile: "../secrets/redmine_oauth_client_secret.txt"  # 必須。空だと起動中止
+    redirectURI: "http://localhost:8090/api/auth/callback"  # 必須。Redmine の登録値と完全一致。公開 URL + /api/auth/callback
+    scopes:                  # 必須。Redmine の権限名。Redmine の登録値と一致させる（admin は不可）
+      - view_project
+      - view_issues
+      - add_issues
+      - edit_issues
+      - add_issue_notes
+      - view_members
+    stateTTLMinutes: 10      # 認可要求（state・PKCE）の有効期間
+    refreshSkewSeconds: 60   # アクセストークンの期限の何秒前からリフレッシュするか
 
 # ---- データベース ----
 database:

@@ -5,6 +5,10 @@
 # 目的:
 #   - secrets/session_key.txt : セッション署名鍵（32 バイト乱数の hex）
 #   - secrets/kek.txt         : API キー暗号化鍵 KEK（32 バイト乱数の hex）
+#   - secrets/redmine_oauth_client_secret.txt : Redmine が発行する OAuth
+#     Client Secret の置き場所。値は Redmine のアプリケーション登録時に一度だけ
+#     表示されるため生成できない。空のファイルだけを作り（既存は触らない）、
+#     空のままだと rmapp は起動時にキー名付きで中止する。
 #   生成済みのファイルは上書きしない（冪等）。ファイルは mode 600、
 #   secrets/ ディレクトリは mode 700 とし、git 管理外に置く。
 #
@@ -44,5 +48,16 @@ generate() {
 
 generate "${secrets_dir}/session_key.txt" 32
 generate "${secrets_dir}/kek.txt" 32
+
+# OAuth Client Secret は Redmine が発行する値のため生成しない。空のプレースホルダ
+# だけを置く（既存ファイルは内容に関わらず触らない）。
+client_secret_file="${secrets_dir}/redmine_oauth_client_secret.txt"
+if [[ -e "${client_secret_file}" ]]; then
+  log "既に存在するためスキップします: ${client_secret_file}"
+else
+  : > "${client_secret_file}"
+  chmod 600 "${client_secret_file}"
+  log "空のプレースホルダを作成しました（Redmine で発行した Client Secret を書き込んでください）: ${client_secret_file}"
+fi
 
 log "完了しました。secrets/ 配下は git 管理外です。コミットしないでください。"

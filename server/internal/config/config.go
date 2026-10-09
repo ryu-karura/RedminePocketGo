@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -51,12 +52,49 @@ type Crypto struct {
 }
 
 type Redmine struct {
-	BaseURL        string `yaml:"baseURL"`
+	BaseURL string `yaml:"baseURL"`
+	// PublicBaseURL はブラウザから見える Redmine の起点 URL（/oauth/authorize
+	// への遷移に使う）。空なら BaseURL。末尾スラッシュは除去される。
+	PublicBaseURL  string `yaml:"publicBaseURL"`
 	SubURI         string `yaml:"subURI"`
 	TimeoutSeconds int    `yaml:"timeoutSeconds"`
 	MaxRetries     int    `yaml:"maxRetries"`
 	MaxConcurrency int    `yaml:"maxConcurrency"`
 	PageSize       int    `yaml:"pageSize"`
+
+	OAuth OAuth `yaml:"oauth"`
+}
+
+// OAuth は Redmine に登録した OAuth アプリケーション（Doorkeeper）の設定
+// （Design.md §10.3）。
+type OAuth struct {
+	ClientID string `yaml:"clientId"`
+	// ClientSecretFile はクライアントシークレットのファイル。値そのものは
+	// 設定ファイルに書かない（CLAUDE.md §4.5）。
+	ClientSecretFile   string   `yaml:"clientSecretFile"`
+	RedirectURI        string   `yaml:"redirectURI"`
+	Scopes             []string `yaml:"scopes"`
+	StateTTLMinutes    int      `yaml:"stateTTLMinutes"`
+	RefreshSkewSeconds int      `yaml:"refreshSkewSeconds"`
+}
+
+// callbackPath は redirectURI の末尾に必須のパス（internal/auth の
+// コールバックルートと一致させる）。
+const callbackPath = "/api/auth/callback"
+
+// LoadClientSecret はクライアントシークレットファイルを読み、前後の空白を
+// 除いた値を返す。ファイルが無い・空の場合は、キー名付きのエラーにする
+// （値自体はエラーに含めない）。
+func (o OAuth) LoadClientSecret() (string, error) {
+	b, err := os.ReadFile(o.ClientSecretFile)
+	if err != nil {
+		return "", fmt.Errorf("config: redmine.oauth.clientSecretFile を読めません（Redmine で発行したシークレットを置いてください）: %w", err)
+	}
+	v := strings.TrimSpace(string(b))
+	if v == "" {
+		return "", fmt.Errorf("config: redmine.oauth.clientSecretFile %q が空です（Redmine のアプリケーション登録時に一度だけ表示される Client Secret を書き込んでください）", o.ClientSecretFile)
+	}
+	return v, nil
 }
 
 type Database struct {
@@ -108,11 +146,22 @@ var setters = map[string]func(*Config, string) error{
 	"crypto.keyVersion": func(c *Config, v string) error { return setInt(&c.Crypto.KeyVersion, v) },
 
 	"redmine.baseURL":        func(c *Config, v string) error { c.Redmine.BaseURL = v; return nil },
+	"redmine.publicBaseURL":  func(c *Config, v string) error { c.Redmine.PublicBaseURL = v; return nil },
 	"redmine.subURI":         func(c *Config, v string) error { c.Redmine.SubURI = v; return nil },
 	"redmine.timeoutSeconds": func(c *Config, v string) error { return setInt(&c.Redmine.TimeoutSeconds, v) },
 	"redmine.maxRetries":     func(c *Config, v string) error { return setInt(&c.Redmine.MaxRetries, v) },
 	"redmine.maxConcurrency": func(c *Config, v string) error { return setInt(&c.Redmine.MaxConcurrency, v) },
 	"redmine.pageSize":       func(c *Config, v string) error { return setInt(&c.Redmine.PageSize, v) },
+
+	"redmine.oauth.clientId":         func(c *Config, v string) error { c.Redmine.OAuth.ClientID = v; return nil },
+	"redmine.oauth.clientSecretFile": func(c *Config, v string) error { c.Redmine.OAuth.ClientSecretFile = v; return nil },
+	"redmine.oauth.redirectURI":      func(c *Config, v string) error { c.Redmine.OAuth.RedirectURI = v; return nil },
+	"redmine.oauth.scopes": func(c *Config, v string) error {
+		c.Redmine.OAuth.Scopes = splitList(v)
+		return nil
+	},
+	"redmine.oauth.stateTTLMinutes":    func(c *Config, v string) error { return setInt(&c.Redmine.OAuth.StateTTLMinutes, v) },
+	"redmine.oauth.refreshSkewSeconds": func(c *Config, v string) error { return setInt(&c.Redmine.OAuth.RefreshSkewSeconds, v) },
 
 	"database.dsn": func(c *Config, v string) error { c.Database.DSN = v; return nil },
 
@@ -190,6 +239,10 @@ func defaults() *Config {
 			MaxRetries:     2,
 			MaxConcurrency: 8,
 			PageSize:       100,
+			OAuth: OAuth{
+				StateTTLMinutes:    10,
+				RefreshSkewSeconds: 60,
+			},
 		},
 		Features: Features{
 			IssueCreate:       true,
@@ -209,6 +262,10 @@ func (c *Config) validate() error {
 		{"webauthn.origins", len(c.WebAuthn.Origins) == 0},
 		{"crypto.kekFile", c.Crypto.KEKFile == ""},
 		{"redmine.baseURL", c.Redmine.BaseURL == ""},
+		{"redmine.oauth.clientId", c.Redmine.OAuth.ClientID == ""},
+		{"redmine.oauth.clientSecretFile", c.Redmine.OAuth.ClientSecretFile == ""},
+		{"redmine.oauth.redirectURI", c.Redmine.OAuth.RedirectURI == ""},
+		{"redmine.oauth.scopes", len(c.Redmine.OAuth.Scopes) == 0},
 		{"database.dsn", c.Database.DSN == ""},
 	}
 	for _, r := range required {
@@ -237,6 +294,19 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config: redmine.baseURL %q は URL として不正です", c.Redmine.BaseURL)
 	}
 
+	// ブラウザ向けの起点 URL。未指定ならサーバー間通信用と同じ。
+	c.Redmine.PublicBaseURL = strings.TrimRight(c.Redmine.PublicBaseURL, "/")
+	if c.Redmine.PublicBaseURL == "" {
+		c.Redmine.PublicBaseURL = strings.TrimRight(c.Redmine.BaseURL, "/")
+	}
+	if u, err := url.Parse(c.Redmine.PublicBaseURL); err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("config: redmine.publicBaseURL %q は URL として不正です", c.Redmine.PublicBaseURL)
+	}
+
+	if err := c.Redmine.OAuth.validate(); err != nil {
+		return err
+	}
+
 	// サブ URI は上流 URL の結合に直接使う。先頭スラッシュ必須・末尾
 	// スラッシュ禁止にして、二重スラッシュや host 直結の事故を防ぐ。
 	if c.Redmine.SubURI != "" {
@@ -256,14 +326,53 @@ func (c *Config) validate() error {
 		{"redmine.timeoutSeconds", c.Redmine.TimeoutSeconds},
 		{"redmine.maxConcurrency", c.Redmine.MaxConcurrency},
 		{"redmine.pageSize", c.Redmine.PageSize},
+		{"redmine.oauth.stateTTLMinutes", c.Redmine.OAuth.StateTTLMinutes},
 	}
 	for _, p := range positives {
 		if p.v <= 0 {
 			return fmt.Errorf("config: %s は正の整数でなければなりません（現在: %d）", p.key, p.v)
 		}
 	}
+	if c.Redmine.OAuth.RefreshSkewSeconds < 0 {
+		return fmt.Errorf("config: redmine.oauth.refreshSkewSeconds は 0 以上でなければなりません（現在: %d）", c.Redmine.OAuth.RefreshSkewSeconds)
+	}
 	if c.Redmine.MaxRetries < 0 {
 		return fmt.Errorf("config: redmine.maxRetries は 0 以上でなければなりません（現在: %d）", c.Redmine.MaxRetries)
+	}
+	return nil
+}
+
+var scopeName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+func (o OAuth) validate() error {
+	u, err := url.Parse(o.RedirectURI)
+	if err != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return fmt.Errorf("config: redmine.oauth.redirectURI %q は query / fragment を持たない絶対 URL でなければなりません", o.RedirectURI)
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		// 開発用にループバックのみ平文を許す（本番は TLS 必須: Design.md §11.1）。
+		switch u.Hostname() {
+		case "localhost", "127.0.0.1", "::1":
+		default:
+			return fmt.Errorf("config: redmine.oauth.redirectURI %q は https でなければなりません（http はループバックのみ）", o.RedirectURI)
+		}
+	default:
+		return fmt.Errorf("config: redmine.oauth.redirectURI %q のスキームが不正です", o.RedirectURI)
+	}
+	if !strings.HasSuffix(u.Path, callbackPath) {
+		return fmt.Errorf("config: redmine.oauth.redirectURI %q は %q で終わらなければなりません", o.RedirectURI, callbackPath)
+	}
+
+	for _, sc := range o.Scopes {
+		if !scopeName.MatchString(sc) {
+			return fmt.Errorf("config: redmine.oauth.scopes に不正な名前 %q があります（Redmine の権限名: 英小文字・数字・_）", sc)
+		}
+		if sc == "admin" {
+			// 管理者スコープは要求しない（最小権限。Design.md §3.6）。
+			return fmt.Errorf("config: redmine.oauth.scopes に admin は指定できません（最小権限の方針）")
+		}
 	}
 	return nil
 }

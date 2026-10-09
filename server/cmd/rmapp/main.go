@@ -113,6 +113,12 @@ func run(out io.Writer, args []string) error {
 		return err
 	}
 
+	// Redmine で発行したクライアントシークレットが置かれていること（空・欠落は
+	// キー名付きで起動を中止する）。値はここでは使わない。
+	if _, err := cfg.Redmine.OAuth.LoadClientSecret(); err != nil {
+		return err
+	}
+
 	logger := newLogger(cfg.LogLevel, os.Stderr)
 	slog.SetDefault(logger)
 

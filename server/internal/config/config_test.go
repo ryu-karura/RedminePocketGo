@@ -20,6 +20,11 @@ crypto:
   kekFile: /tmp/kek.txt
 redmine:
   baseURL: http://localhost:8080
+  oauth:
+    clientId: rmapp-client
+    clientSecretFile: /tmp/redmine_oauth_client_secret.txt
+    redirectURI: https://example.com/api/auth/callback
+    scopes: [view_project, view_issues]
 database:
   dsn: "file:data/rmapp.db?_fk=1"
 `
@@ -66,6 +71,10 @@ func TestLoadDefaults(t *testing.T) {
 		{"features.mapEnabled", cfg.Features.MapEnabled, false},
 		{"features.issueCreate", cfg.Features.IssueCreate, true},
 		{"features.passwordBootstrap", cfg.Features.PasswordBootstrap, true},
+		{"redmine.publicBaseURL", cfg.Redmine.PublicBaseURL, "http://localhost:8080"},
+		{"redmine.oauth.clientId", cfg.Redmine.OAuth.ClientID, "rmapp-client"},
+		{"redmine.oauth.stateTTLMinutes", cfg.Redmine.OAuth.StateTTLMinutes, 10},
+		{"redmine.oauth.refreshSkewSeconds", cfg.Redmine.OAuth.RefreshSkewSeconds, 60},
 	}
 	for _, tt := range tests {
 		if tt.got != tt.want {
@@ -86,6 +95,10 @@ func TestLoadMissingRequiredKey(t *testing.T) {
 		{"crypto.kekFile", "kekFile"},
 		{"redmine.baseURL", "baseURL"},
 		{"database.dsn", "dsn"},
+		{"redmine.oauth.clientId", "clientId"},
+		{"redmine.oauth.clientSecretFile", "clientSecretFile"},
+		{"redmine.oauth.redirectURI", "redirectURI"},
+		{"redmine.oauth.scopes", "scopes"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.key, func(t *testing.T) {
@@ -125,6 +138,15 @@ func TestLoadInvalidValues(t *testing.T) {
 		{"bad userVerification", strings.Replace(validYAML, "rpName: RedminePocketGo", "rpName: RedminePocketGo\n  userVerification: always", 1), "userVerification"},
 		{"unknown key", validYAML + "unknownKey: 1\n", "unknown"},
 		{"bad redmine URL", strings.Replace(validYAML, "http://localhost:8080", "'::not a url'", 1), "redmine.baseURL"},
+		{"redirectURI not absolute", strings.Replace(validYAML, "https://example.com/api/auth/callback", "/api/auth/callback", 1), "redmine.oauth.redirectURI"},
+		{"redirectURI plain http on public host", strings.Replace(validYAML, "https://example.com/api/auth/callback", "http://example.com/api/auth/callback", 1), "redmine.oauth.redirectURI"},
+		{"redirectURI wrong path", strings.Replace(validYAML, "https://example.com/api/auth/callback", "https://example.com/callback", 1), "redmine.oauth.redirectURI"},
+		{"redirectURI with query", strings.Replace(validYAML, "https://example.com/api/auth/callback", "https://example.com/api/auth/callback?x=1", 1), "redmine.oauth.redirectURI"},
+		{"scope with space-like junk", strings.Replace(validYAML, "[view_project, view_issues]", "[\"view issues\"]", 1), "redmine.oauth.scopes"},
+		{"admin scope forbidden", strings.Replace(validYAML, "[view_project, view_issues]", "[view_project, admin]", 1), "redmine.oauth.scopes"},
+		{"bad publicBaseURL", strings.Replace(validYAML, "  oauth:", "  publicBaseURL: \"::nope\"\n  oauth:", 1), "redmine.publicBaseURL"},
+		{"non-positive stateTTL", strings.Replace(validYAML, "clientId: rmapp-client", "clientId: rmapp-client\n    stateTTLMinutes: 0", 1), "redmine.oauth.stateTTLMinutes"},
+		{"negative refreshSkew", strings.Replace(validYAML, "clientId: rmapp-client", "clientId: rmapp-client\n    refreshSkewSeconds: -1", 1), "redmine.oauth.refreshSkewSeconds"},
 		{"non-positive timeout", strings.Replace(validYAML, "baseURL: http://localhost:8080", "baseURL: http://localhost:8080\n  timeoutSeconds: 0", 1), "redmine.timeoutSeconds"},
 	}
 	for _, tt := range tests {
@@ -154,6 +176,10 @@ func TestLoadPrecedence(t *testing.T) {
 			return "24", true
 		case "RMAPP_WEBAUTHN_ORIGINS":
 			return "https://a.example,https://b.example", true
+		case "RMAPP_REDMINE_OAUTH_SCOPES":
+			return "view_project, view_issues ,add_issues", true
+		case "RMAPP_REDMINE_PUBLICBASEURL":
+			return "https://redmine.example/", true
 		}
 		return "", false
 	}
@@ -170,6 +196,12 @@ func TestLoadPrecedence(t *testing.T) {
 	}
 	if cfg.Session.IdleTimeoutHours != 24 {
 		t.Errorf("env int override: idleTimeoutHours = %d; want 24", cfg.Session.IdleTimeoutHours)
+	}
+	if got := strings.Join(cfg.Redmine.OAuth.Scopes, " "); got != "view_project view_issues add_issues" {
+		t.Errorf("env scopes override = %q", got)
+	}
+	if cfg.Redmine.PublicBaseURL != "https://redmine.example" {
+		t.Errorf("publicBaseURL = %q; 末尾スラッシュは除去される", cfg.Redmine.PublicBaseURL)
 	}
 	want := []string{"https://a.example", "https://b.example"}
 	if len(cfg.WebAuthn.Origins) != 2 || cfg.WebAuthn.Origins[0] != want[0] || cfg.WebAuthn.Origins[1] != want[1] {
@@ -236,6 +268,55 @@ func TestSubURIValidation(t *testing.T) {
 		}
 		if !tt.wantOK && (err == nil || !strings.Contains(err.Error(), "subURI")) {
 			t.Errorf("subURI %q: err = %v; want error naming subURI", tt.subURI, err)
+		}
+	}
+}
+
+func TestLoadClientSecret(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	tests := []struct {
+		name    string
+		path    string
+		want    string
+		wantErr string // 空なら成功を期待
+	}{
+		{"value with trailing newline", write("ok.txt", "s3cr3t\n"), "s3cr3t", ""},
+		{"empty file", write("empty.txt", ""), "", "redmine.oauth.clientSecretFile"},
+		{"whitespace only", write("ws.txt", " \n\t\n"), "", "redmine.oauth.clientSecretFile"},
+		{"missing file", filepath.Join(dir, "nope.txt"), "", "redmine.oauth.clientSecretFile"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			o := OAuth{ClientSecretFile: tt.path}
+			got, err := o.LoadClientSecret()
+			if tt.wantErr == "" {
+				if err != nil || got != tt.want {
+					t.Fatalf("LoadClientSecret = %q, %v; want %q", got, err, tt.want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v; want error naming %s", err, tt.wantErr)
+			}
+			if strings.Contains(err.Error(), "s3cr3t") {
+				t.Errorf("error leaks secret content: %v", err)
+			}
+		})
+	}
+}
+
+func TestOAuthRedirectURIAllowsLoopbackHTTP(t *testing.T) {
+	for _, host := range []string{"localhost:8090", "127.0.0.1:8090", "[::1]:8090"} {
+		yaml := strings.Replace(validYAML, "https://example.com/api/auth/callback", "http://"+host+"/api/auth/callback", 1)
+		if _, err := Load(writeConfig(t, yaml), nil, noEnv); err != nil {
+			t.Errorf("loopback http redirectURI %s rejected: %v", host, err)
 		}
 	}
 }

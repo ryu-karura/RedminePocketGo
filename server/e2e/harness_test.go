@@ -35,6 +35,9 @@ func startRmapp(t *testing.T, redmineURL string) *rmapp {
 	sk := randHex(t, 32)
 	writeFile(t, filepath.Join(work, "kek.txt"), kek)
 	writeFile(t, filepath.Join(work, "session_key.txt"), sk)
+	// OAuth は後続タスク（フェーズ 10）でこのハーネスを作り直すまで未使用。
+	// 設定の必須キーを満たすためのダミー値。
+	writeFile(t, filepath.Join(work, "oauth_client_secret.txt"), "e2e-dummy-client-secret")
 
 	cfg := fmt.Sprintf(`
 listen: ":18099"
@@ -52,6 +55,11 @@ crypto:
 redmine:
   baseURL: %q
   subURI: ""
+  oauth:
+    clientId: "e2e-client"
+    clientSecretFile: %q
+    redirectURI: "http://localhost:18099/api/auth/callback"
+    scopes: [view_project, view_issues]
 database:
   dsn: %q
 `,
@@ -59,6 +67,7 @@ database:
 		filepath.Join(work, "session_key.txt"),
 		filepath.Join(work, "kek.txt"),
 		redmineURL,
+		filepath.Join(work, "oauth_client_secret.txt"),
 		"file:"+filepath.Join(work, "e2e.db"),
 	)
 	cfgPath := filepath.Join(work, "config.yaml")
