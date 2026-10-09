@@ -71,7 +71,7 @@ jobs:
 
       - name: 失敗時の redmine-web ログ
         if: failure()
-        run: docker logs --tail 200 redmine-web
+        run: docker logs --tail 15 redmine-web 2>&1 | cut -c1-200
 
       - name: 後片付け
         if: always()
