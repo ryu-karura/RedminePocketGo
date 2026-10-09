@@ -27,6 +27,7 @@ on:
     paths:
       - "scripts/test-stack.sh"
       - "scripts/redmine-seed-testdata.sh"
+      - "scripts/redmine-oauth-probe.sh"
       - ".github/workflows/stack-test.yml"
       - "server/**"
   pull_request:
@@ -34,6 +35,7 @@ on:
     paths:
       - "scripts/test-stack.sh"
       - "scripts/redmine-seed-testdata.sh"
+      - "scripts/redmine-oauth-probe.sh"
       - ".github/workflows/stack-test.yml"
       - "server/**"
 
@@ -111,6 +113,15 @@ jobs:
           fi
           echo "::add-mask::${api_key}"
           echo "api_key=${api_key}" >> "${GITHUB_OUTPUT}"
+
+      # フェーズ 10: Redmine 7 の OAuth 2.0 プロバイダ（Doorkeeper）の実挙動を
+      # 探査し、結果をジョブサマリに出す（Design.md §14）。観測結果の記録が
+      # 目的のため、基本フローが成立しなくても test-stack.sh は止めない。
+      - name: Redmine OAuth の実機探査
+        continue-on-error: true
+        env:
+          CI: "true"
+        run: scripts/redmine-oauth-probe.sh
 
       - name: scripts/test-stack.sh を実行
         env:
