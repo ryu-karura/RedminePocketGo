@@ -115,7 +115,8 @@ func run(out io.Writer, args []string) error {
 
 	// Redmine で発行したクライアントシークレットが置かれていること（空・欠落は
 	// キー名付きで起動を中止する）。値はここでは使わない。
-	if _, err := cfg.Redmine.OAuth.LoadClientSecret(); err != nil {
+	clientSecret, err := cfg.Redmine.OAuth.LoadClientSecret()
+	if err != nil {
 		return err
 	}
 
@@ -204,6 +205,30 @@ func run(out io.Writer, args []string) error {
 		MaxConcurrency: cfg.Redmine.MaxConcurrency,
 		PageSize:       cfg.Redmine.PageSize,
 	})
+	// OAuth ログイン（Design.md §3）。フェーズ 10 の切り替えまで旧経路と並存する。
+	rmOAuth := rmClient.OAuth(redmine.OAuthConfig{
+		ClientID:      cfg.Redmine.OAuth.ClientID,
+		ClientSecret:  clientSecret,
+		RedirectURI:   cfg.Redmine.OAuth.RedirectURI,
+		Scopes:        cfg.Redmine.OAuth.Scopes,
+		PublicBaseURL: cfg.Redmine.PublicBaseURL,
+	})
+	(&httpapi.OAuthHandler{
+		Login: auth.NewOAuthLogin(auth.OAuthLoginDeps{
+			Store: st, Vault: vault, OAuth: rmOAuth, Identity: rmClient, Sessions: sessions,
+			StateTTL: time.Duration(cfg.Redmine.OAuth.StateTTLMinutes) * time.Minute,
+		}),
+		Sessions:          sessions,
+		Limiter:           auth.NewRateLimiter(5, 60*time.Second),
+		Logger:            logger,
+		SessionCookieName: cfg.Session.CookieName,
+		StateCookieName:   "rmapp_oauth_state",
+		StateCookiePath:   cfg.BaseURL + "/api/auth/",
+		StateCookieSecure: cfg.Session.SecureCookie,
+		StateCookieTTL:    time.Duration(cfg.Redmine.OAuth.StateTTLMinutes) * time.Minute,
+		AppURL:            cfg.BaseURL + "/",
+	}).RegisterRoutes(apiMux)
+
 	(&httpapi.AggregateHandler{
 		Redmine: rmClient,
 		Keys:    vaultKeyProvider{vault},

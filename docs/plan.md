@@ -321,11 +321,14 @@ CI 経由で初めて顕在化し、修正した（サンドボックスでは D
       保存をやり切る）、`invalid_grant` で無効化、一時障害・クライアント設定
       不備では無効化しない、保存失敗は `ErrPersistFailed`。API キー用の
       `APIKey` / `SaveAPIKey` 等は切り替えタスクで削除
-- [ ] `internal/auth`: `GET /api/auth/login`（state・PKCE S256・戻り先の
+- [x] `internal/auth`: `GET /api/auth/login`（state・PKCE S256・戻り先の
       許可リスト）と `GET /api/auth/callback`（state 検証、コード交換、
       利用者特定、users upsert、セッション再発行、失敗は
       `#login?error=<code>`）。レート制限。異常系（同意拒否・state 不一致/
-      期限切れ/使用済み・交換失敗・オープンリダイレクト試行）のテーブル駆動
+      期限切れ/使用済み・交換失敗・オープンリダイレクト試行）のテーブル駆動。
+      ログイン CSRF 対策として state を発行元ブラウザの Cookie にも束縛し、
+      一致しなければ state を消費する前に拒否する。旧経路と並存する形で
+      `main` に配線済み（切り替えタスクまで旧経路も有効）
 - [ ] `internal/proxy` / `internal/httpapi/aggregate`: `Authorization: Bearer`
       付与、`X-Redmine-API-Key` 受信 400 を維持し送信は一切しない、上流 401 は
       リフレッシュして 1 回だけ再試行、失敗で 409
