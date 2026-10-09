@@ -284,13 +284,15 @@ CI 経由で初めて顕在化し、修正した（サンドボックスでは D
 §10・§11 に記載済み（本フェーズは実装の移行）。フェーズ 2・3・5 の完了済み
 成果物のうち、認証と API キー保管に関する部分を置き換える。
 
-- [ ] 実機確認（Design.md §14「OAuth の実機確認」①〜⑤）: RedmineDocker 7.0.2
+- [x] 実機確認（Design.md §14「OAuth の実機確認」①〜⑤）: RedmineDocker 7.0.2
       開発スタックで `rails runner` により OAuth アプリケーションを作り、
       authorize → token → `/users/current.json` → refresh → revoke を実際に
       通して、必要スコープ・PKCE 受理・リフレッシュの入れ替え挙動・6.1.x
       で報告されたスコープ未適用の有無を確認する。結果を Design.md §3.6 /
-      §14 に反映する（Docker デーモンのある CI 上で実施。stack-test.yml に
-      探査ステップを追加）
+      §14 に反映する（Docker デーモンのある CI 上で実施。stack-test.yml は
+      無活動で自動無効化されていたため、専用の
+      `.github/workflows/oauth-probe.yml` + `scripts/redmine-oauth-probe.sh`
+      で実施。結果は Design.md §14 に記録済み）
 - [ ] `internal/config`: `redmine.oauth.*` と `redmine.publicBaseURL` を追加、
       `webauthn.*` / `features.passwordBootstrap` を削除。必須キー欠落・
       client secret 空ファイルはキー名付きで起動中止。`config.yaml` 雛形と
@@ -398,3 +400,4 @@ scripts/*.sh` 通過、`stack-test.yml` が実 RedmineDocker（7.0.2）で緑。
 | 2026-07-23 | フェーズ 8 に「`scripts/redmine-seed-testdata.sh` + `.github/workflows/stack-test.yml`」タスクを追加し完了 | オーナーの直接指示（ブランチ `claude/docker-config-review-ezxi6j`）。フェーズ 8 唯一の残完了条件「実 RedmineDocker スタックでの `scripts/test-stack.sh` 緑」が、Docker デーモンのない無人サンドボックスでは 3 回連続（自動実行ログ 07-23 04:11・10:11・16:13）検証不能で停滞していたため、Docker デーモンを持つ GitHub Actions 上で REST API 有効化・テストデータ投入・`scripts/test-stack.sh` 実行までを自動化する CI ワークフローを追加し、完了条件の検証手段をサンドボックス非依存にした。本セッションでは PR 作成のみを行い、CI 実行結果（stack-test ワークフローの緑）そのものの確認は次回に委ねる |
 | 2026-07-23 | フェーズ 8 の状態を「進行中」から「完了」に変更 | PR #7 の CI（`stack-test.yml`、コミット da81b3a）で `scripts/test-stack.sh` の緑を実際に確認できたため。CI 実行で `scripts/redmine-seed-testdata.sh` の実装バグ 2 件（`docker exec` が entrypoint.sh 由来の `SECRET_KEY_BASE` を継承しないこと、シークレットファイルが root にしか読めないこと）が初めて顕在化し、いずれも修正済み。フェーズ 8 完了条件の詳細はフェーズ 8 節を参照 |
 | 2026-10-09 | フェーズ 10（OAuth 2.0 化）を新設（未着手）。CLAUDE.md と Design.md を OAuth 前提の設計に改訂 | オーナー指示: ① 利用者の API キー使用禁止 ② Redmine 7 前提 ③ アプリを Redmine に登録してログインさせたい。認証をパスキー + API キー保管から Redmine 7 の OAuth 2.0（Doorkeeper、認可コードのみ・リフレッシュあり・スコープ = Redmine 権限）へ置換する。**パスキー・登録コード・パスワードブートストラップ・端末管理は廃止**する判断を含む（認証手段が OAuth のみになり不要。併用したい場合は別フェーズとして再提案する）。フェーズ 2・3・5 の完了は履歴として維持し、置換はフェーズ 10 で行う。フェーズ 7（スキップ済み）の回復コード構想も OAuth 化で不要になった（Design.md §11.4 を改訂） |
+| 2026-10-09 | フェーズ 10 第 1 タスクの探査を stack-test.yml ではなく専用ワークフロー `oauth-probe.yml` で実施 | `stack-test.yml` が GitHub により無活動で自動無効化（`disabled_inactivity`）されており、本セッションからは再有効化できないため。RedmineDocker の `scripts/generate-secrets.sh` が今のランナーで `tr: Broken pipe`（SIGPIPE）により失敗する不具合も確認したため、探査ワークフロー内で同形式のシークレットを自前生成した（RedmineDocker は変更しない: CLAUDE.md §9-6）。`stack-test.yml` の再有効化と RedmineDocker 側の修正はオーナー対応が必要 |

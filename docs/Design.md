@@ -55,13 +55,19 @@ RedmineDocker で運用される Redmine を、スマートフォンから快適
     スコープを指定しない認可要求は公開権限のみになる。
   - クライアントシークレットとトークンは DB にハッシュ保存される
     （シークレットは登録直後の 1 回しか表示されない）。
-  - **PKCE は強制されない**（`force_pkce` なし）。`rmapp` は強制の有無に
-    関わらず常に S256 で送る。
+  - **PKCE は強制されない**（`force_pkce` なし）が、`code_challenge` を付けた
+    認可は交換時に検証される（実測: 誤った `code_verifier` は `invalid_grant`、
+    欠落は `invalid_request`）。`rmapp` は常に S256 で送る。認可コードは
+    1 回限り（再利用は `invalid_grant`）。
+  - **同意の送信時に Redmine の sudo モード（パスワード再確認）が挟まる**
+    （実測。同一 Redmine セッション内の 2 回目以降は省略される）。再入力は
+    Redmine の画面内で完結し、`rmapp` はパスワードに触れない。
   - アプリケーションの登録・編集は **Redmine 管理者のみ**。利用者は
     「マイアカウント」で認可済みアプリを確認・取り消しできる。
   - トークン introspection は無効。利用者の特定には
     `GET /users/current.json` を使う。
-  - 実装時に実機で確認する事項は §14 に列挙する。
+  - 実機探査の結果は §14（`scripts/redmine-oauth-probe.sh`、CI の
+    `Redmine OAuth Probe` ワークフローで再現できる）。
 
 本リポジトリはこのスタックを**変更しません**。接続するだけです。
 
@@ -196,7 +202,9 @@ IoTDesignTemplate から引き継ぐ設計:
 2. rmapp が state・code_verifier を生成して保存（10 分・1 回限り）、
    Redmine の /redmine/oauth/authorize?response_type=code&client_id=…
    &redirect_uri=…&scope=…&state=…&code_challenge=…&code_challenge_method=S256 へ 302
-3. 利用者が Redmine にログイン（未ログインの場合）し、スコープに同意
+3. 利用者が Redmine にログイン（未ログインの場合）し、スコープに同意する。
+   同意の送信時に Redmine がパスワードの再確認（sudo モード）を求めることが
+   ある。いずれも Redmine の画面内の操作で、`rmapp` には何も渡らない
 4. Redmine が /api/auth/callback?code=…&state=… へ 302
 5. rmapp: state を検証（一致・未使用・期限内。使用済みにする）
 6. rmapp → Redmine（サーバー間）: POST /redmine/oauth/token
@@ -247,14 +255,21 @@ Redmine のスコープは権限名です。`rmapp` が機能として使うも�
 
 | 機能 | スコープ（案） |
 |---|---|
-| プロジェクト・チケット・メタ情報の参照 | `view_issues`（＋プロジェクト参照に必要なもの） |
+| プロジェクト・チケット・メタ情報の参照 | `view_project` `view_issues` |
 | チケット作成 | `add_issues` |
 | チケット更新 | `edit_issues` |
 | コメント追加 | `add_issue_notes` |
-| バージョン・メンバーの参照（カスタムフィールド解決） | `view_issues` ほか実機で確認（§14） |
+| メンバーの参照（担当者候補、カスタムフィールド解決） | `view_members`（実測: 無いと `memberships.json` は 403） |
+| バージョンの参照（カスタムフィールド解決） | 上記の `view_project` `view_issues` で足りる（実測: 200） |
 
+- `redmine.oauth.scopes` の初期値は
+  `view_project view_issues add_issues edit_issues add_issue_notes view_members`
+  （実測で全機能が通った組）。スコープを指定しない認可は `view_project` のみに
+  なる。`GET /users/current.json` はどのスコープでも通り、応答に `api_key` は
+  含まれない（実測）。
 - 利用者の実効権限は「アプリのスコープ ∩ 同意したスコープ ∩ プロジェクトの
-  ロール」です。`rmapp` は権限を追加も緩和もしません（§11.2）。
+  ロール」です。スコープ強制は 7.0.2 で有効（実測: 読み取り専用スコープの
+  トークンによるチケット更新・コメント追加・作成はすべて 403）。`rmapp` は権限を追加も緩和もしません（§11.2）。
 - `admin` スコープは要求しません。したがって `GET /custom_fields.json`
   （管理者専用）は常に 403 になり、§6.4 のとおり生値表示へ degrade します。
 - スコープを増やす機能追加は、`redmine.oauth.scopes` の変更と**全利用者の
@@ -310,8 +325,10 @@ Redmine のスコープは権限名です。`rmapp` が機能として使うも�
 1 回だけリフレッシュして再試行します。
 
 1. リフレッシュは**ユーザー単位で直列化**する（single-flight）。Redmine は
-   リフレッシュのたびにリフレッシュトークンを入れ替えるため、同じ古い
-   トークンで並行にリフレッシュすると連鎖が壊れ、`invalid_grant` になる。
+   リフレッシュのたびにリフレッシュトークンを入れ替え、古いものは即座に
+   `invalid_grant` になる（実測）。同じ古いトークンで並行にリフレッシュすると
+   連鎖が壊れる。一方、リフレッシュ前の古いアクセストークンは期限まで有効な
+   ままなので（実測）、処理中の他リクエストは失敗しない。
 2. 新しい組を**先に永続化してから**使う。
 3. `invalid_grant`（利用者が Redmine で取り消した、管理者がアプリを削除した、
    ローテーションを取りこぼした）の場合は組を「無効」としてマークする。
@@ -1031,7 +1048,7 @@ RedmineDocker には `redmine_gtt` プラグインと PostGIS が**最初から�
 
 | 項目 | 内容 |
 |---|---|
-| OAuth の実機確認（実装時に最初に検証） | ① 発行トークンで `GET /users/current.json` が通る最小スコープ。② 既存スコープ集合で `GET /projects.json` / `/issues.json` / `/enumerations/issue_priorities.json` / `/trackers.json` / `/issue_statuses.json` / `memberships` / `versions` が通るか。③ 認可要求の `code_challenge` を Redmine 7.0.2 が受理・検証するか。④ リフレッシュ時に旧リフレッシュトークンが即失効するか（Doorkeeper 既定の挙動）。⑤ Redmine 6.1.x で報告のあったスコープ未適用の書き込み（Redmine チケット管理上の不具合）が 7.0.2 で解消済みか。解消していなければ書き込みの可否はロールのみで決まる前提で設計を見直す |
+| OAuth 実機探査の結果（Redmine 7.0.2、2026-10-09、CI 実行） | ① `/users/current.json` はスコープ指定なし（= `view_project`）でも通る。② 主要 GET は 200。`custom_fields.json` は 403（管理者専用）、`memberships.json` は `view_members` が必要。③ PKCE は検証される（§1.2）。④ リフレッシュでリフレッシュトークンは入れ替わり、旧トークンは `invalid_grant`、旧アクセストークンは有効なまま。⑤ スコープ外の書き込みは 403（6.1.x の未適用報告はチケット更新・コメント・作成では再現せず）。⑥ `/oauth/revoke` は 200、失効後は 401。`expires_in` は 7200。同意時に sudo モードの再確認あり。**未検証**: DELETE（本アプリは許可リストに無く使わない）、sudo モードの有効時間、`GET /my/account.json` が Bearer でも `api_key` を返しうること（中継・内部呼び出しとも禁止のまま） |
 | E2E / スタック試験でのトークン調達 | Redmine のパスワードを使わず、`rails runner` で `Doorkeeper::Application` と `Doorkeeper::AccessToken` を作る方式で、ブラウザを介さず試験用の組を得る。管理者の API キーは使わない（`scripts/redmine-seed-testdata.sh` の書き換えを含む） |
 | 添付ファイルのアップロード | Redmine は 2 段階（トークン取得 → 本体送信）のため、中継方式を別途検討する |
 | 全文検索 | Redmine の検索 API を使うか、絞り込みのみに留めるか |
