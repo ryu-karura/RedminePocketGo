@@ -307,10 +307,13 @@ CI 経由で初めて顕在化し、修正した（サンドボックスでは D
       `foreign_key_check` で確かめる仕組みを追加。空 DB と適用済み DB の
       両方でテスト）と各メソッド（`UpsertOAuthUser`＝旧行のログイン名での
       引き継ぎ、トークンの保存・状態、state の 1 回限りの消費はアトミック）
-- [ ] `internal/redmine`: OAuth クライアント（authorize URL 構築、コード交換、
+- [x] `internal/redmine`: OAuth クライアント（authorize URL 構築、コード交換、
       リフレッシュ、失効、`CurrentUser`）。`httptest.Server` のみでテスト。
-      `Authorization` ヘッダーを受け取る形に既存クライアントを変更し、API
-      キー引数を除去
+      トークン POST は再試行しない（回転済みトークンの二重使用で連鎖が
+      壊れるため）。`invalid_grant` / `invalid_client` / その他 4xx / 上流障害を
+      区別して返す。トークンを含む型は文字列化・JSON・ログで伏せる。
+      既存クライアントの API キー → Bearer への切り替えは不可分の
+      「切り替え」タスク群に含めた（変更履歴参照）
 - [ ] `internal/credential`: アクセス/リフレッシュを別ノンスで AES-256-GCM
       保管、`MarshalJSON` は `"[redacted]"`、ユーザー単位 single-flight
       リフレッシュ（新しい組を先に永続化）、`invalid_grant` で無効化、
@@ -410,3 +413,4 @@ scripts/*.sh` 通過、`stack-test.yml` が実 RedmineDocker（7.0.2）で緑。
 | 2026-10-09 | フェーズ 10 第 1 タスクの探査を stack-test.yml ではなく専用ワークフロー `oauth-probe.yml` で実施 | `stack-test.yml` が GitHub により無活動で自動無効化（`disabled_inactivity`）されており、本セッションからは再有効化できないため。RedmineDocker の `scripts/generate-secrets.sh` が今のランナーで `tr: Broken pipe`（SIGPIPE）により失敗する不具合も確認したため、探査ワークフロー内で同形式のシークレットを自前生成した（RedmineDocker は変更しない: CLAUDE.md §9-6）。`stack-test.yml` の再有効化と RedmineDocker 側の修正はオーナー対応が必要 |
 | 2026-10-09 | フェーズ 10 の config タスクから `webauthn.*` / `features.passwordBootstrap` の削除を分離し、「WebAuthn 一式の削除」タスクへ移動 | これらのキーは `internal/auth` と `cmd/rmapp` がまだ参照しており、先に消すとビルドが壊れる（コミット毎に全スイート緑という運用規則に反する）。OAuth キーの追加（先行して必須化）と、利用側の削除は別コミットにする |
 | 2026-10-09 | フェーズ 10 の store タスクから旧テーブル・旧カラムの削除を分離し、「WebAuthn 一式の削除」タスク（マイグレーション 0003）へ移動 | 旧テーブルは `internal/auth` / `internal/credential` / `internal/store` の既存実装がまだ使っており、先に消すとコミット毎に全スイート緑を保てない。0002 は追加と `users` の作り直し（`webauthn_user_handle` の NULL 許容化。OAuth の利用者は持たないため）に限定した |
+| 2026-10-09 | フェーズ 10 のタスク「`internal/proxy` / `aggregate` の Bearer 化」「WebAuthn 一式の削除」「フロント」「`server/e2e/` 作り直し」を、不可分の「切り替え」としてまとめて 1 つの変更で行う方針にした（タスクの行は残し、同じコミットで一緒にチェックする）。追加のみで済むタスク（credential の OAuth 保管庫、auth のログイン／コールバック、logout / me / reauthorize）は、旧経路と並存させて先に実装する | 既存クライアントのヘッダーを Bearer に切り替えると、旧経路（パスキー + API キー）に依存する E2E の擬似 Redmine（`X-Redmine-Api-Key` を検査）や集約・中継のテストが同時に赤になる。E2E はフロントのログイン画面を駆動するため、サーバー・フロント・E2E は個別のコミットでは全スイート緑を保てない。implement スキルの「不可分なら束ねてよい（コミット本文に明記）」に従う |

@@ -14,9 +14,9 @@ import (
 	"time"
 )
 
-// ErrUnauthorized は API キーが上流に拒否された（401）。呼び出し側は
-// キーを無効化して 409 を返す。
-var ErrUnauthorized = errors.New("redmine: API キーが拒否されました")
+// ErrUnauthorized は資格情報（API キー／アクセストークン）が上流に拒否された
+// （401）。呼び出し側は更新または無効化の上、409 を返す。
+var ErrUnauthorized = errors.New("redmine: 資格情報が拒否されました")
 
 // ErrUpstream は上流（Redmine）の一時的・恒久的障害。呼び出し側は 502 に
 // 写像する。httpapi へ依存しないよう redmine 側に番兵を置く（import 循環回避）。
@@ -36,6 +36,7 @@ type Config struct {
 type Client struct {
 	http        *http.Client
 	root        string // baseURL + subURI
+	subURI      string
 	maxRetries  int
 	pageSize    int
 	sem         chan struct{} // 同時接続数の上限（Design.md §9）
@@ -46,6 +47,7 @@ func NewClient(cfg Config) *Client {
 	return &Client{
 		http:        &http.Client{Timeout: cfg.Timeout},
 		root:        strings.TrimSuffix(cfg.BaseURL, "/") + cfg.SubURI,
+		subURI:      cfg.SubURI,
 		maxRetries:  cfg.MaxRetries,
 		pageSize:    cfg.PageSize,
 		sem:         make(chan struct{}, max(1, cfg.MaxConcurrency)),
@@ -202,6 +204,15 @@ type Membership struct {
 // 502、503）に限り指数バックオフで最大 maxRetries 回再試行する。4xx は
 // 再試行しない（Design.md §9）。
 func (c *Client) get(ctx context.Context, apiKey, path string, query url.Values, v any) error {
+	return c.getWith(ctx, func(r *http.Request) { r.Header.Set("X-Redmine-Api-Key", apiKey) }, path, query, v)
+}
+
+// getBearer は OAuth のアクセストークンで GET する。
+func (c *Client) getBearer(ctx context.Context, accessToken, path string, query url.Values, v any) error {
+	return c.getWith(ctx, func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+accessToken) }, path, query, v)
+}
+
+func (c *Client) getWith(ctx context.Context, setAuth func(*http.Request), path string, query url.Values, v any) error {
 	c.sem <- struct{}{}
 	defer func() { <-c.sem }()
 
@@ -216,7 +227,7 @@ func (c *Client) get(ctx context.Context, apiKey, path string, query url.Values,
 		if err != nil {
 			return fmt.Errorf("redmine: リクエスト作成に失敗しました: %w", err)
 		}
-		req.Header.Set("X-Redmine-Api-Key", apiKey)
+		setAuth(req)
 
 		resp, err := c.http.Do(req)
 		switch {
