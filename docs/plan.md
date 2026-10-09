@@ -314,10 +314,13 @@ CI 経由で初めて顕在化し、修正した（サンドボックスでは D
       区別して返す。トークンを含む型は文字列化・JSON・ログで伏せる。
       既存クライアントの API キー → Bearer への切り替えは不可分の
       「切り替え」タスク群に含めた（変更履歴参照）
-- [ ] `internal/credential`: アクセス/リフレッシュを別ノンスで AES-256-GCM
-      保管、`MarshalJSON` は `"[redacted]"`、ユーザー単位 single-flight
-      リフレッシュ（新しい組を先に永続化）、`invalid_grant` で無効化、
-      一時障害では無効化しない
+- [x] `internal/credential`: アクセス/リフレッシュを別ノンスで AES-256-GCM
+      保管（利用者 ID と用途を AAD に束縛し、入れ替え・別行への移植を検出）、
+      トークン型は文字列化・JSON・ログで伏せる、ユーザー単位 single-flight
+      リフレッシュ（新しい組を先に永続化。呼び出し元のキャンセルから切り離して
+      保存をやり切る）、`invalid_grant` で無効化、一時障害・クライアント設定
+      不備では無効化しない、保存失敗は `ErrPersistFailed`。API キー用の
+      `APIKey` / `SaveAPIKey` 等は切り替えタスクで削除
 - [ ] `internal/auth`: `GET /api/auth/login`（state・PKCE S256・戻り先の
       許可リスト）と `GET /api/auth/callback`（state 検証、コード交換、
       利用者特定、users upsert、セッション再発行、失敗は
