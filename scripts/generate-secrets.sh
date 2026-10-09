@@ -4,7 +4,7 @@
 #
 # 目的:
 #   - secrets/session_key.txt : セッション署名鍵（32 バイト乱数の hex）
-#   - secrets/kek.txt         : API キー暗号化鍵 KEK（32 バイト乱数の hex）
+#   - secrets/kek.txt         : OAuth トークン暗号化鍵 KEK（32 バイト乱数の hex）
 #   - secrets/redmine_oauth_client_secret.txt : Redmine が発行する OAuth
 #     Client Secret の置き場所。値は Redmine のアプリケーション登録時に一度だけ
 #     表示されるため生成できない。空のファイルだけを作り（既存は触らない）、

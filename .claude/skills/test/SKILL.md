@@ -14,8 +14,8 @@ description: Which test suites to run for each kind of change in RedminePocketGo
 | `app/js/common/tree.js`, `utils.js`, other pure JS modules | `node --test app/js/tests/*.test.js` | Node's built-in runner only — no npm packages, ever. Pass the glob, not the bare directory: `node --test <dir>` runs the dir as an entrypoint in v22 instead of discovering tests |
 | `app/` screens, CSS, HTML | `node --test` if logic changed, plus manual 4-state check (loading / empty / error / populated) served by the Go server | Record what was manually verified in the commit body |
 | `scripts/*.sh` | `shellcheck scripts/*.sh` | Before every commit touching shell |
-| Phase 5–6 browser flows (login, screen 4-states) | `make test-e2e` (`server/e2e/`, build tag `e2e`) | chromedp + bundled Chromium (`/opt/pw-browsers/chromium`); passkeys via CDP WebAuthn virtual authenticator; screenshots kept as evidence. Replaces the manual browser checks in unattended runs; phase 5+ |
-| Cross-cutting / relay behaviour against real Redmine | `scripts/test-stack.sh` | Requires a running RedmineDocker dev stack; phase 8+ |
+| Phase 5–6 browser flows (login, screen 4-states) | `make test-e2e` (`server/e2e/`, build tag `e2e`) | chromedp + bundled Chromium (`/opt/pw-browsers/chromium`); OAuth login against an in-process fake Redmine OAuth provider (PKCE, rotation, revocation); screenshots kept as evidence. Replaces the manual browser checks in unattended runs; phase 5+ |
+| Cross-cutting / relay behaviour against real Redmine | `scripts/test-stack.sh` | Requires a running RedmineDocker dev stack and RMAPP_STACK_ACCESS_TOKEN (OAuth token from redmine-seed-testdata.sh); phase 8+ |
 | Every push / PR (independent verification) | GitHub Actions `.github/workflows/ci.yml` | Runs `make build` / `test-unit` / `test-api`, shellcheck, and `node --test` automatically. Green CI — not the agent's own claim — is what counts as verified in unattended runs |
 
 Test-first is mandatory (CLAUDE.md §9-5): write the failing test, watch it
@@ -26,7 +26,7 @@ fail, then implement. A test that never failed proves nothing.
 - **Expected red**: the failing test you just wrote in the TDD cycle.
   Normal; not a lesson.
 - **Unexpected failure**: a test that should have passed fails — a
-  regression, a wrong assumption about Redmine/WebAuthn/SQLite behaviour, a
+  regression, a wrong assumption about Redmine/OAuth/SQLite behaviour, a
   misread convention, an environment gotcha, a flaky test. These trigger
   the lesson loop below.
 

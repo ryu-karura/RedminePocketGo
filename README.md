@@ -1,11 +1,13 @@
 # Redmine モバイルクライアント
 
 [RedmineDocker](https://github.com/ryu-karura/RedmineDocker) スタックで動作する
-Redmine 6.1.3 と連携する、スマートフォン向け HTML5 SPA と、その認証・中継を
+Redmine 7.0.2 と連携する、スマートフォン向け HTML5 SPA と、その認証・中継を
 担う Go 製 Web サーバーです。
 
-パスキー（WebAuthn）でログインし、Redmine の API キーはサーバー側にのみ
-保管します。ブラウザ側に API キーを一切置かない構成です。
+Redmine の OAuth 2.0（認可コードフロー）でログインします。本サーバーは
+Redmine に OAuth アプリケーションとして登録され、ユーザーは Redmine 自身の
+ログイン・同意画面で認証します。**Redmine の API キーは一切使いません**。
+取得したトークンはサーバー側にのみ保管し、ブラウザには渡しません。
 
 フロントエンドの構成とデザインは
 [IoTDesignTemplate](https://github.com/ryu-karura/IoTDesignTemplate) を
@@ -16,12 +18,13 @@ Redmine 6.1.3 と連携する、スマートフォン向け HTML5 SPA と、そ�
 
 ## 特徴
 
-- **パスキー認証** — 端末の生体認証・PIN でログイン。パスワードを日常的に
-  入力する必要がありません。
-- **API キーをブラウザに渡さない** — Redmine の API キーは Go サーバーが
-  暗号化して保持し、リクエストのたびに付与します。
-- **スマホと PC の併用** — 1 人のユーザーが複数の端末にパスキーを登録でき、
-  どの端末からログインしても同じ Redmine アカウントとして動作します。
+- **Redmine の OAuth 2.0 でログイン** — Redmine のログイン画面（二要素認証や
+  SSO を含む）をそのまま使います。本サーバーはパスワードを見ません。
+- **API キーを使わない・トークンをブラウザに渡さない** — OAuth のアクセス/
+  更新トークンは Go サーバーが暗号化して保持し、リクエストのたびに
+  `Authorization: Bearer` を付与します。
+- **スマホと PC の併用** — どの端末からログインしても同じ Redmine
+  アカウントとして動作します。
 - **親子関係を保った一覧** — プロジェクト、チケットともにツリー構造を
   そのまま表示します。
 - **ビルド不要のフロントエンド** — フレームワークもバンドラも使わない
@@ -40,12 +43,13 @@ Redmine 6.1.3 と連携する、スマートフォン向け HTML5 SPA と、そ�
 [ホスト Apache（TLS 終端）]
    ├── /redmine → RedmineDocker スタック（redmine-web）
    └── /        → 本リポジトリ（rmapp: Go 中継サーバー + SPA）
-                        │ X-Redmine-API-Key
+                        │ OAuth 2.0（認可コード + PKCE）
+                        │ Authorization: Bearer
                         └──────→ Redmine REST API（/redmine 配下）
 ```
 
-Redmine 本体（Redmine 6.1.3、PostgreSQL 18 + PostGIS 3.6、`redmine_gtt` を
-含む 13 プラグイン同梱）は RedmineDocker リポジトリが担当します。
+Redmine 本体（Redmine 7.0.2、PostgreSQL 18 + PostGIS 3.6、`redmine_gtt` を
+含む 15 プラグイン同梱）は RedmineDocker リポジトリが担当します。
 本リポジトリは RedmineDocker のスタックに**接続するだけ**で、変更しません。
 
 構成の詳細な考え方、データモデル、API 仕様、画面設計は
@@ -57,11 +61,11 @@ Redmine 本体（Redmine 6.1.3、PostgreSQL 18 + PostGIS 3.6、`redmine_gtt` を
 
 | 画面 | 内容 |
 |---|---|
-| ログイン | パスキー認証。初回のみ Redmine の認証情報で紐付け |
+| ログイン | 「Redmine でログイン」ボタン → Redmine のログイン・同意画面 |
 | プロジェクト一覧 | 親子関係をツリーで表示 |
 | チケット一覧 | 選択したプロジェクトのチケットをツリーで表示 |
 | チケット詳細 | 属性、説明、コメント、添付を表示 |
-| 設定 | パスキーの追加・削除、Redmine 連携の確認、テーマ切替 |
+| 設定 | Redmine 連携状態・許可スコープの確認、再認可、テーマ切替、ログアウト |
 
 ベースの Redmine には位置情報プラグイン `redmine_gtt` が最初から含まれて
 いるため、将来的にプロジェクト・チケットの位置情報（ポイント・線・多角形）を
@@ -73,10 +77,10 @@ Redmine 本体（Redmine 6.1.3、PostgreSQL 18 + PostGIS 3.6、`redmine_gtt` を
 
 | 項目 | 要件 |
 |---|---|
-| Redmine | RedmineDocker スタック（Redmine 6.1.3、サブ URI `/redmine`）。REST API が有効であること |
+| Redmine | RedmineDocker スタック（Redmine 7.0.2、サブ URI `/redmine`）。REST API が有効で、管理者が OAuth アプリケーションを登録済みであること |
 | Go | 1.25 以降（サーバーのビルド時のみ） |
 | ブラウザ | iOS Safari 16 以降 / Android Chrome 108 以降 |
-| 通信 | HTTPS 必須（パスキーの要件。`localhost` のみ例外） |
+| 通信 | HTTPS 必須（OAuth のリダイレクト URI。`localhost` のみ例外） |
 
 フロントエンドにビルド工程はないため、Node.js は不要です。
 
@@ -89,17 +93,17 @@ RedmineDocker スタックの起動を含む構築手順、設定項目の一覧
 
 概略は次のとおりです。
 
-1. RedmineDocker の手順で Redmine を起動し、REST API を有効にする
+1. RedmineDocker の手順で Redmine を起動し、REST API を有効にして、rmapp を OAuth アプリケーションとして登録する
 2. `scripts/generate-secrets.sh` で鍵ファイルを生成する
 3. `server/config/config.yaml` を用意する
 4. Go サーバーをビルド・起動する
-5. ブラウザからアクセスし、最初のユーザーのパスキーを登録する
+5. ブラウザからアクセスし、「Redmine でログイン」で認可する
 
 ---
 
 ## 日常の操作
 
-起動・停止、設定ファイルの書き換え、パスキーの追加や紛失時の復旧、
+起動・停止、設定ファイルの書き換え、端末紛失時の認可の取り消し、
 ログの確認方法は [docs/Manual.md](docs/Manual.md) を参照してください。
 
 ---
