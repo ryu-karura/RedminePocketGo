@@ -1,0 +1,71 @@
+# Redmine OAuth Probe: Redmine 7 の OAuth 2.0 プロバイダ（Doorkeeper）の実挙動を
+# 探査し、結果をジョブサマリに出す（docs/plan.md フェーズ 10 第 1 タスク、
+# docs/Design.md §14）。RedmineDocker は checkout して起動するのみで
+# 変更しない（CLAUDE.md §9-6）。Redmine の API キーは使わない（§9-1）。
+name: Redmine OAuth Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "claude/**", "ccr-*"]
+    paths:
+      - "scripts/redmine-oauth-probe.sh"
+      - ".github/workflows/oauth-probe.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oauth-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Redmine 7 OAuth 探査
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout RedmineDocker
+        uses: actions/checkout@v4
+        with:
+          repository: ryu-karura/RedmineDocker
+          ref: main
+          path: redminedocker
+
+      - name: RedmineDocker のシークレットを生成
+        working-directory: redminedocker
+        run: bash scripts/generate-secrets.sh
+
+      - name: RedmineDocker 開発スタックを起動
+        working-directory: redminedocker
+        run: docker compose -f compose.dev.yaml up --build -d
+
+      - name: redmine-web の healthy を待機
+        working-directory: redminedocker
+        run: |
+          for _ in $(seq 1 120); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' redmine-web 2>/dev/null || echo unknown)"
+            [ "${status}" = "healthy" ] && exit 0
+            if [ "${status}" = "unhealthy" ]; then
+              docker logs redmine-web
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "redmine-web が healthy になりませんでした（タイムアウト）" >&2
+          docker logs redmine-web
+          exit 1
+
+      - name: OAuth 探査
+        run: scripts/redmine-oauth-probe.sh
+
+      - name: 失敗時の redmine-web ログ
+        if: failure()
+        run: docker logs --tail 200 redmine-web
+
+      - name: 後片付け
+        if: always()
+        working-directory: redminedocker
+        run: docker compose -f compose.dev.yaml down -v
