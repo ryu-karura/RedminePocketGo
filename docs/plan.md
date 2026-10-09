@@ -299,11 +299,14 @@ CI 経由で初めて顕在化し、修正した（サンドボックスでは D
       client secret 空ファイルはキー名付きで起動中止。`config.yaml` 雛形と
       `scripts/generate-secrets.sh`（`redmine_oauth_client_secret.txt` の
       空プレースホルダ、既存ファイルは上書きしない）
-- [ ] `internal/store`: マイグレーション 0002（`users.redmine_user_id`、
-      `oauth_tokens`、`oauth_states` を追加、`credentials` /
-      `redmine_credentials` / `enrollment_codes` / `webauthn_challenges` と
-      `sessions.credential_id` を削除。空 DB と適用済み DB の両方でテスト）
-      と各メソッド（state の 1 回限り消費はアトミック）
+- [x] `internal/store`: マイグレーション 0002（`users.redmine_user_id` 追加と
+      `webauthn_user_handle` の NULL 許容化＝`users` の作り直し、`oauth_tokens`、
+      `oauth_states` を追加。旧テーブルの削除は参照する実装を消す
+      「WebAuthn 一式の削除」タスクの 0003 へ移した。変更履歴参照。作り直しで
+      子テーブルが CASCADE で消えないよう、適用側に外部キー検査を切って
+      `foreign_key_check` で確かめる仕組みを追加。空 DB と適用済み DB の
+      両方でテスト）と各メソッド（`UpsertOAuthUser`＝旧行のログイン名での
+      引き継ぎ、トークンの保存・状態、state の 1 回限りの消費はアトミック）
 - [ ] `internal/redmine`: OAuth クライアント（authorize URL 構築、コード交換、
       リフレッシュ、失効、`CurrentUser`）。`httptest.Server` のみでテスト。
       `Authorization` ヘッダーを受け取る形に既存クライアントを変更し、API
@@ -324,7 +327,9 @@ CI 経由で初めて顕在化し、修正した（サンドボックスでは D
 - [ ] `POST /api/auth/logout`（`/oauth/revoke` をベストエフォート）、
       `GET /api/auth/me`（連携状態・付与スコープ・最終リフレッシュ）、
       `POST /api/auth/reauthorize`
-- [ ] WebAuthn 一式の削除（`config` の `webauthn.*` / `features.passwordBootstrap`
+- [ ] WebAuthn 一式の削除（マイグレーション 0003 で `credentials` /
+      `redmine_credentials` / `enrollment_codes` / `webauthn_challenges` /
+      `users.webauthn_user_handle` / `sessions.credential_id` を削除、`config` の `webauthn.*` / `features.passwordBootstrap`
       キー・構造体・雛形・テストを含む）: `auth/webauthn.go`・`enroll.go`・`bootstrap.go`、
       `httpapi/devices.go` と登録/ログイン/端末系ルート、`go-webauthn`
       依存（`go mod tidy`）、関連テスト、`/my/account.json` への呼び出し
@@ -404,3 +409,4 @@ scripts/*.sh` 通過、`stack-test.yml` が実 RedmineDocker（7.0.2）で緑。
 | 2026-10-09 | フェーズ 10（OAuth 2.0 化）を新設（未着手）。CLAUDE.md と Design.md を OAuth 前提の設計に改訂 | オーナー指示: ① 利用者の API キー使用禁止 ② Redmine 7 前提 ③ アプリを Redmine に登録してログインさせたい。認証をパスキー + API キー保管から Redmine 7 の OAuth 2.0（Doorkeeper、認可コードのみ・リフレッシュあり・スコープ = Redmine 権限）へ置換する。**パスキー・登録コード・パスワードブートストラップ・端末管理は廃止**する判断を含む（認証手段が OAuth のみになり不要。併用したい場合は別フェーズとして再提案する）。フェーズ 2・3・5 の完了は履歴として維持し、置換はフェーズ 10 で行う。フェーズ 7（スキップ済み）の回復コード構想も OAuth 化で不要になった（Design.md §11.4 を改訂） |
 | 2026-10-09 | フェーズ 10 第 1 タスクの探査を stack-test.yml ではなく専用ワークフロー `oauth-probe.yml` で実施 | `stack-test.yml` が GitHub により無活動で自動無効化（`disabled_inactivity`）されており、本セッションからは再有効化できないため。RedmineDocker の `scripts/generate-secrets.sh` が今のランナーで `tr: Broken pipe`（SIGPIPE）により失敗する不具合も確認したため、探査ワークフロー内で同形式のシークレットを自前生成した（RedmineDocker は変更しない: CLAUDE.md §9-6）。`stack-test.yml` の再有効化と RedmineDocker 側の修正はオーナー対応が必要 |
 | 2026-10-09 | フェーズ 10 の config タスクから `webauthn.*` / `features.passwordBootstrap` の削除を分離し、「WebAuthn 一式の削除」タスクへ移動 | これらのキーは `internal/auth` と `cmd/rmapp` がまだ参照しており、先に消すとビルドが壊れる（コミット毎に全スイート緑という運用規則に反する）。OAuth キーの追加（先行して必須化）と、利用側の削除は別コミットにする |
+| 2026-10-09 | フェーズ 10 の store タスクから旧テーブル・旧カラムの削除を分離し、「WebAuthn 一式の削除」タスク（マイグレーション 0003）へ移動 | 旧テーブルは `internal/auth` / `internal/credential` / `internal/store` の既存実装がまだ使っており、先に消すとコミット毎に全スイート緑を保てない。0002 は追加と `users` の作り直し（`webauthn_user_handle` の NULL 許容化。OAuth の利用者は持たないため）に限定した |

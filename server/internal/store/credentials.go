@@ -105,7 +105,7 @@ func (s *Store) UpdateCredentialUsage(ctx context.Context, id []byte, signCount 
 // （Discoverable Credential ログイン用）。未登録は (nil, nil)。
 func (s *Store) GetUserByHandle(ctx context.Context, handle []byte) (*User, error) {
 	return s.scanUser(s.db.QueryRowContext(ctx,
-		`SELECT id, redmine_login, display_name, webauthn_user_handle
+		`SELECT id, redmine_user_id, redmine_login, display_name, webauthn_user_handle
 		 FROM users WHERE webauthn_user_handle = ?`, handle))
 }
 

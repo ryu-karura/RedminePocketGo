@@ -21,7 +21,10 @@ type Session struct {
 
 // User は rmapp の利用者（Design.md §5.1）。
 type User struct {
-	ID                 string
+	ID string
+	// RedmineUserID は Redmine のユーザー ID（同一性の鍵）。旧方式の行で
+	// 初回の OAuth ログイン前は 0。
+	RedmineUserID      int64
 	RedmineLogin       string
 	DisplayName        string
 	WebAuthnUserHandle []byte
@@ -49,26 +52,30 @@ func (s *Store) CreateUser(ctx context.Context, u *User) error {
 // GetUserByLogin は Redmine ログイン名で利用者を引く。未登録は (nil, nil)。
 func (s *Store) GetUserByLogin(ctx context.Context, login string) (*User, error) {
 	return s.scanUser(s.db.QueryRowContext(ctx,
-		`SELECT id, redmine_login, display_name, webauthn_user_handle
+		`SELECT id, redmine_user_id, redmine_login, display_name, webauthn_user_handle
 		 FROM users WHERE redmine_login = ?`, login))
 }
 
 // GetUserByID は ID で利用者を引く。未登録は (nil, nil)。
 func (s *Store) GetUserByID(ctx context.Context, id string) (*User, error) {
 	return s.scanUser(s.db.QueryRowContext(ctx,
-		`SELECT id, redmine_login, display_name, webauthn_user_handle
+		`SELECT id, redmine_user_id, redmine_login, display_name, webauthn_user_handle
 		 FROM users WHERE id = ?`, id))
 }
 
 func (s *Store) scanUser(row *sql.Row) (*User, error) {
-	var u User
-	err := row.Scan(&u.ID, &u.RedmineLogin, &u.DisplayName, &u.WebAuthnUserHandle)
+	var (
+		u    User
+		rmID sql.NullInt64
+	)
+	err := row.Scan(&u.ID, &rmID, &u.RedmineLogin, &u.DisplayName, &u.WebAuthnUserHandle)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store: ユーザー取得に失敗しました: %w", err)
 	}
+	u.RedmineUserID = rmID.Int64
 	return &u, nil
 }
 

@@ -4,6 +4,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io/fs"
@@ -99,23 +100,66 @@ func (s *Store) Migrate() error {
 			return fmt.Errorf("store: %s を読めません: %w", name, err)
 		}
 
-		tx, err := s.db.Begin()
+		if err := s.applyMigration(name, string(body)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fkOffMarker を先頭行に持つマイグレーションは、外部キー検査を切って適用する。
+// テーブルの作り直し（SQLite 公式の 12 ステップ手順）に必要。有効のまま
+// 親テーブルを DROP すると ON DELETE CASCADE で子の行が消えるため。
+const fkOffMarker = "-- migrate:foreign-keys=off"
+
+func (s *Store) applyMigration(name, body string) error {
+	ctx := context.Background()
+	fkOff := strings.HasPrefix(body, fkOffMarker)
+
+	// PRAGMA foreign_keys はトランザクション内では無効で、接続単位の設定。
+	// 同じ接続で OFF → 適用 → ON を行うため接続を固定する。
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("store: 接続の取得に失敗しました (%s): %w", name, err)
+	}
+	defer conn.Close()
+
+	if fkOff {
+		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+			return fmt.Errorf("store: 外部キー検査を切れません (%s): %w", name, err)
+		}
+		// 失敗した場合も、接続をプールへ戻す前に必ず有効へ戻す。
+		defer conn.ExecContext(ctx, "PRAGMA foreign_keys = ON") //nolint:errcheck
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: トランザクション開始に失敗しました (%s): %w", name, err)
+	}
+	if _, err := tx.ExecContext(ctx, body); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("store: マイグレーション %s の適用に失敗しました: %w", name, err)
+	}
+	if fkOff {
+		// 切っていた間に壊れた参照が無いことを、コミット前に確かめる。
+		rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
 		if err != nil {
-			return fmt.Errorf("store: トランザクション開始に失敗しました (%s): %w", name, err)
-		}
-		if _, err := tx.Exec(string(body)); err != nil {
 			tx.Rollback()
-			return fmt.Errorf("store: マイグレーション %s の適用に失敗しました: %w", name, err)
+			return fmt.Errorf("store: 外部キー整合の検査に失敗しました (%s): %w", name, err)
 		}
-		if _, err := tx.Exec(
-			"INSERT INTO schema_migrations (version) VALUES (?)", name,
-		); err != nil {
+		broken := rows.Next()
+		rows.Close()
+		if broken {
 			tx.Rollback()
-			return fmt.Errorf("store: %s の適用記録に失敗しました: %w", name, err)
+			return fmt.Errorf("store: マイグレーション %s が外部キー整合を壊したため取り消しました", name)
 		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("store: %s のコミットに失敗しました: %w", name, err)
-		}
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations (version) VALUES (?)", name); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("store: %s の適用記録に失敗しました: %w", name, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: %s のコミットに失敗しました: %w", name, err)
 	}
 	return nil
 }
