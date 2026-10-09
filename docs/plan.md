@@ -357,12 +357,12 @@ CI 経由で初めて顕在化し、修正した（サンドボックスでは D
       各画面 → `redmine_credential_invalid` → 再認可 → 復旧を実機検証
       （擬似 Redmine は PKCE・コード 1 回限り・リフレッシュ回転を再現。API キーの
       ヘッダーを受け取ったらテストを失敗させる）
-- [ ] 運用スクリプト・CI: `scripts/redmine-seed-testdata.sh` と
+- [x] 運用スクリプト・CI: `scripts/redmine-seed-testdata.sh` と
       `scripts/test-stack.sh`（`server/stacktest`）から管理者 API キーの利用を
       除去し、`rails runner` で OAuth アプリケーションとアクセストークンを
       払い出す方式に変更。`stack-test.yml` を追従。`credential.NewTestAPIKey`
       等の API キー用テスト補助を削除
-- [ ] ドキュメント同期: Setup.md（Redmine での OAuth アプリケーション登録
+- [x] ドキュメント同期: Setup.md（Redmine での OAuth アプリケーション登録
       手順、`redmine.oauth.*` の設定、既存環境の移行手順）、Manual.md
       （認可の取り消し、スコープ変更時の全員再ログイン、KEK 喪失時の復旧、
       端末紛失時の運用）、README.md、Design.md 冒頭の「設計変更」注記の削除、
@@ -428,3 +428,4 @@ scripts/*.sh` 通過、`stack-test.yml` が実 RedmineDocker（7.0.2）で緑。
 | 2026-10-09 | フェーズ 10 の store タスクから旧テーブル・旧カラムの削除を分離し、「WebAuthn 一式の削除」タスク（マイグレーション 0003）へ移動 | 旧テーブルは `internal/auth` / `internal/credential` / `internal/store` の既存実装がまだ使っており、先に消すとコミット毎に全スイート緑を保てない。0002 は追加と `users` の作り直し（`webauthn_user_handle` の NULL 許容化。OAuth の利用者は持たないため）に限定した |
 | 2026-10-09 | フェーズ 10 のタスク「`internal/proxy` / `aggregate` の Bearer 化」「WebAuthn 一式の削除」「フロント」「`server/e2e/` 作り直し」を、不可分の「切り替え」としてまとめて 1 つの変更で行う方針にした（タスクの行は残し、同じコミットで一緒にチェックする）。追加のみで済むタスク（credential の OAuth 保管庫、auth のログイン／コールバック、logout / me / reauthorize）は、旧経路と並存させて先に実装する | 既存クライアントのヘッダーを Bearer に切り替えると、旧経路（パスキー + API キー）に依存する E2E の擬似 Redmine（`X-Redmine-Api-Key` を検査）や集約・中継のテストが同時に赤になる。E2E はフロントのログイン画面を駆動するため、サーバー・フロント・E2E は個別のコミットでは全スイート緑を保てない。implement スキルの「不可分なら束ねてよい（コミット本文に明記）」に従う |
 | 2026-10-09 | フェーズ 10 の「切り替え」（proxy/aggregate の Bearer 化、logout/me/reauthorize、WebAuthn 一式の削除、フロント、`server/e2e/` の作り直し）を 1 つの変更として完了 | 上記の方針（変更履歴 2026-10-09「不可分の切り替え」）どおり。旧経路との並存は終了し、`webauthn.*` / `features.passwordBootstrap` の設定キーは unknown キーとして起動を止める。実装中に LESSONS #7〜#9 を追記（OAuth リダイレクトを跨ぐ e2e の待機、上流を呼ばない画面での検出、テーブル作り直しの外部キー） |
+| 2026-10-09 | フェーズ 10 のタスク 12・13 を完了（運用スクリプト・CI、ドキュメント同期） | oauth-probe.yml run 11 が実 Redmine 7.0.2 で緑（探査 38 項目、`redmine-seed-testdata.sh` のアクセストークン発行、`test-stack.sh` 4 項目すべて成功）。実測で `http://localhost`・`127.0.0.1` と `https://` のリダイレクト URI が登録可、それ以外の http は拒否と確認し Setup.md に反映。Setup/Manual/README/スキルから旧方式の記述を除去し Design.md の移行注記を削除 |

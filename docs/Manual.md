@@ -312,7 +312,7 @@ sudo systemctl restart rmapp
 # 5. 動作を確認する
 curl -i https://ドメイン/healthz
 curl -i https://ドメイン/readyz
-RMAPP_STACK_API_KEY=xxxx bash scripts/test-stack.sh    # 開発環境なら統合テストも実行できる
+RMAPP_STACK_ACCESS_TOKEN=xxxx bash scripts/test-stack.sh    # 開発環境なら統合テストも実行できる（トークンは Setup.md 11 章）
 ```
 
 データベースの更新（マイグレーション）は起動のたびに自動で行われ、何度
@@ -401,8 +401,7 @@ Redmine 側で管理者がアプリケーションを再登録し直した場合
 
 ```
 1. Redmine 自体の応答を確認する
-   time curl -o /dev/null -s -H "X-Redmine-API-Key: ..." \
-        https://ドメイン/redmine/projects.json
+   time curl -o /dev/null -s https://ドメイン/redmine/login
 
 2. rmapp のログの duration_ms を見て、どこで時間がかかっているか特定する
 

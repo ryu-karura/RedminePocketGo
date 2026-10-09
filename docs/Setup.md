@@ -35,16 +35,19 @@ docker compose version   # RedmineDocker 開発スタックを同居させる場
 
 ### 1.2 ドメインと証明書
 
-パスキーは HTTPS でしか動作しません。`localhost` のみ例外です。
+OAuth のリダイレクト URI は、Redmine が **HTTPS のみ**受け付けます
+（実測: `https://…` と `http://localhost` / `http://127.0.0.1` は登録でき、
+それ以外の `http://…` は「Redirect URI must be an HTTPS/SSL URI.」で拒否）。
+本サーバー側も同じ規則で設定を検証します。
 
 | 用途 | 必要なもの |
 |---|---|
 | 開発 | `localhost` で可。証明書は不要 |
 | 本番 | 独自ドメインと TLS 証明書。RedmineDocker と同じホスト Apache で終端 |
 
-**ドメイン名（= パスキーの RP ID）は運用開始後に変更できません。**
-変更すると登録済みのパスキーがすべて無効になります。着手前に確定させて
-ください。
+**公開 URL（= リダイレクト URI のホスト）を変えたら、Redmine 側の
+アプリケーション登録も `redmine.oauth.redirectURI` も更新してください。**
+両者は完全一致が必要です。
 
 ---
 
@@ -88,17 +91,44 @@ Redmine の REST API は既定で無効です。有効にしないと本アプ�
 3. 「RESTによるWebサービスを有効にする」にチェックを入れる
 4. 保存する
 
-### 3.3 動作確認
+### 3.3 OAuth アプリケーションの登録
 
-1. 右上のユーザー名 →「個人設定」→「APIアクセスキー」の「表示」でキーを確認
-2. コマンドで確認します。**サブ URI `/redmine` を忘れないでください。**
+本アプリは Redmine 7 の OAuth 2.0 プロバイダに「アプリケーション」として
+登録します（管理者のみ操作可能。**一度だけ**行う作業です）。
+
+1. 管理者でログインする
+2. 「管理」メニューの「アプリケーション」（`/redmine/oauth/applications`）を開く
+3. 「新しいアプリケーション」を選び、次のとおり入力する
+
+| 項目 | 値 |
+|---|---|
+| 名称 | 任意（例: `Redmine モバイル`） |
+| リダイレクト URI | 開発: `http://localhost:8090/api/auth/callback`、本番: `https://<公開ドメイン>/api/auth/callback` |
+| Confidential | チェックを入れる（クライアントシークレットを使う） |
+| スコープ | `view_project` `view_issues` `add_issues` `edit_issues` `add_issue_notes` `view_members`（`config.yaml` の `redmine.oauth.scopes` と同じにする。`admin` は付けない） |
+
+4. 保存すると **Client ID** と **Client Secret** が表示される。
+   Client Secret は**この画面でしか表示されません**。
+   `secrets/redmine_oauth_client_secret.txt` に書き込む（4 章）。
+   Client ID は `config.yaml` の `redmine.oauth.clientId` に設定する（5 章）。
 
 ```bash
-curl -H "X-Redmine-API-Key: 取得したキー" \
-     http://localhost:8080/redmine/projects.json
+umask 077
+printf '%s' 'ここに Client Secret' > secrets/redmine_oauth_client_secret.txt
 ```
 
-JSON が返れば成功です。
+Client Secret を紛失した場合は、Redmine でアプリケーションのシークレットを
+再発行し、ファイルを書き換えてサーバーを再起動します。
+
+### 3.3.1 動作確認
+
+ブラウザで次の順に確認します（手順 8.2 と同じ画面遷移）。
+
+1. `http://localhost:8090/` を開き「Redmine でログイン」を押す
+2. Redmine のログイン画面でログインする
+3. 同意画面が出る（このとき Redmine がパスワードの再確認を求めることが
+   あります。Redmine 7 のsudo モードによる仕様です）
+4. 「許可」で本アプリのプロジェクト一覧へ戻る
 
 ### 3.4 地図機能について
 
@@ -109,13 +139,14 @@ JSON が返れば成功です。
 
 ## 4. 鍵の生成
 
-中継サーバーは 2 種類の鍵をファイルで必要とします
+中継サーバーは次のシークレットをファイルで必要とします
 （RedmineDocker と同じファイルベースのシークレット方式）。
 
 | ファイル | 用途 | 失った場合 |
 |---|---|---|
 | `secrets/session_key.txt` | セッションの改ざん防止 | 全員が再ログイン |
-| `secrets/kek.txt` | API キーの暗号化 | 全員が Redmine 連携を再設定 |
+| `secrets/kek.txt` | OAuth トークンの暗号化 | 全員が再ログイン（再認可） |
+| `secrets/redmine_oauth_client_secret.txt` | Redmine が発行する Client Secret（`generate-secrets.sh` は空のファイルを作るだけ） | Redmine でシークレットを再発行 |
 
 生成します。
 
@@ -126,8 +157,9 @@ bash scripts/generate-secrets.sh
 スクリプトは `secrets/` を mode 700 で作成し、各ファイルを mode 600 で
 生成します。`secrets/` は `.gitignore` 登録済みです。
 
-**この 2 つのファイルは必ずバックアップしてください。** 特に `kek.txt` を
-失うと、保存済みの API キーは復号できなくなります。
+**`session_key.txt` と `kek.txt` は必ずバックアップしてください。** 特に `kek.txt` を
+失うと、保存済みの OAuth トークンは復号できなくなります（再ログインで復旧）。
+`redmine_oauth_client_secret.txt` が空だとサーバーは起動時に中止します。
 
 ---
 
@@ -141,12 +173,14 @@ bash scripts/generate-secrets.sh
 
 | キー | 設定する値 |
 |---|---|
-| `webauthn.rpId` | ドメイン名（ポート番号とスキームを含めない） |
-| `webauthn.rpName` | 端末の認証画面に表示される名称 |
-| `webauthn.origins` | アクセス元のオリジン（スキームとポートを含む） |
+| `redmine.oauth.clientId` | 3.3 で Redmine が発行した Client ID |
+| `redmine.oauth.clientSecretFile` | `secrets/redmine_oauth_client_secret.txt` へのパス |
+| `redmine.oauth.redirectURI` | 公開 URL + `/api/auth/callback`（Redmine の登録値と完全一致） |
+| `redmine.oauth.scopes` | Redmine の登録スコープと同じ一覧 |
 | `session.secretFile` | `secrets/session_key.txt` へのパス |
 | `crypto.kekFile` | `secrets/kek.txt` へのパス |
-| `redmine.baseURL` | Redmine の起点 URL |
+| `redmine.baseURL` | Redmine の起点 URL（サーバー間通信用） |
+| `redmine.publicBaseURL` | ブラウザから見える Redmine の URL（`baseURL` と異なる本番では必須） |
 | `database.dsn` | SQLite の接続先 |
 
 ### 5.2 開発環境の設定例
@@ -167,18 +201,23 @@ session:
   secureCookie: false          # localhost の http では false
   secretFile: "../secrets/session_key.txt"
 
-webauthn:
-  rpId: "localhost"
-  rpName: "Redmine モバイル"
-  origins:
-    - "http://localhost:8090"
-
 crypto:
   kekFile: "../secrets/kek.txt"
 
 redmine:
   baseURL: "http://localhost:8080"
   subURI: "/redmine"           # RedmineDocker の REDMINE_SUBURI と一致させる
+  oauth:
+    clientId: "Redmine が発行した Client ID"
+    clientSecretFile: "../secrets/redmine_oauth_client_secret.txt"
+    redirectURI: "http://localhost:8090/api/auth/callback"
+    scopes:
+      - view_project
+      - view_issues
+      - add_issues
+      - edit_issues
+      - add_issue_notes
+      - view_members
 
 database:
   dsn: "file:data/rmapp.db?_pragma=foreign_keys(1)"
@@ -206,34 +245,44 @@ session:
   secureCookie: true
   secretFile: "/opt/rmapp/secrets/session_key.txt"
 
-webauthn:
-  rpId: "redmine-app.example.jp"
-  rpName: "Redmine モバイル"
-  origins:
-    - "https://redmine-app.example.jp"
-
 crypto:
   kekFile: "/opt/rmapp/secrets/kek.txt"
 
 redmine:
   # 同一ホストのコンテナへループバック経由で接続します
   baseURL: "http://127.0.0.1:80"
+  # ブラウザが認可画面へ遷移する先（公開 URL）。baseURL と別なので必須
+  publicBaseURL: "https://redmine-app.example.jp"
   subURI: "/redmine"
+  oauth:
+    clientId: "Redmine が発行した Client ID"
+    clientSecretFile: "/opt/rmapp/secrets/redmine_oauth_client_secret.txt"
+    redirectURI: "https://redmine-app.example.jp/api/auth/callback"
+    scopes:
+      - view_project
+      - view_issues
+      - add_issues
+      - edit_issues
+      - add_issue_notes
+      - view_members
 
 database:
   dsn: "file:/var/lib/rmapp/rmapp.db?_pragma=foreign_keys(1)"
 ```
 
-### 5.4 rpId と origins の関係
+### 5.4 URL 設定の関係
 
 間違えやすい箇所です。
 
-| 項目 | 含めるもの | 例 |
+| 項目 | 意味 | 例 |
 |---|---|---|
-| `rpId` | ドメイン名のみ | `redmine-app.example.jp` |
-| `origins` | スキーム + ドメイン + ポート | `https://redmine-app.example.jp` |
+| `redmine.baseURL` | サーバーが Redmine を呼ぶ URL（内部でよい） | `http://127.0.0.1:80` |
+| `redmine.publicBaseURL` | ブラウザが認可画面へ移動する URL | `https://redmine-app.example.jp` |
+| `redmine.oauth.redirectURI` | Redmine が認可後にブラウザを戻す URL | `https://redmine-app.example.jp/api/auth/callback` |
 
-`rpId` にスキームやポートを含めると、パスキーの登録・認証が失敗します。
+`redirectURI` は Redmine のアプリケーション登録値と**1 文字も違わず**
+一致させてください（食い違うと Redmine が認可画面でエラーを出します）。
+スコープを増やした場合は Redmine の登録も更新し、全員が再認可します。
 
 ---
 
@@ -284,29 +333,25 @@ cd server
 設定に不備がある場合は、起動前にキー名を示して即座に終了します
 （例: `crypto.kekFile を読めません`）。別途の検証専用コマンドはありません。
 
-### 8.2 最初のユーザー登録
+### 8.2 最初のログイン
 
 1. ブラウザで `http://localhost:8090/`（本番は公開 URL）を開く
-2. 「Redmine の情報でログイン」を選択する
-3. Redmine のログイン名とパスワードを入力する
-4. 認証に成功すると、パスキーの登録を求められる
-5. 端末の生体認証または PIN で登録を完了する
+2. 「Redmine でログイン」を選択する
+3. Redmine のログイン画面でログインする（Redmine の認証設定がそのまま使われます）
+4. 同意画面で「許可」する（パスワードの再確認を求められることがあります）
+5. 本アプリに戻り、プロジェクト一覧が表示される
 
-Redmine のパスワードはこの手順の中でのみ使用され、保存されません。
+本サーバーは Redmine のパスワードを一切受け取りません。2 台目以降の端末も
+同じ手順でログインするだけで利用できます（端末ごとの登録は不要）。
 
-### 8.3 2 台目の端末を登録する
+#### 旧方式（パスキー・API キー）からの移行
 
-**必ず登録してください。** 回復コードのような救済手段は現時点では
-ありません。端末が 1 台だけの状態でその端末を失うと、Redmine の認証情報に
-よる再紐付け（8.1 と同じ手順）以外にログインする方法がなくなります。
-
-1. 登録済みの端末でログインする
-2. 設定画面を開く
-3. 「別の端末を追加」を選択し、登録コードを発行する
-4. 追加したい端末でログイン画面を開き、「登録コードで端末を追加」を選択する
-5. コードを入力し、パスキーを登録する
-
-登録コードの有効期限は 10 分、1 回限りです。
+起動時に DB マイグレーション（0002・0003）が自動で適用され、旧方式の
+データ（パスキー、暗号化 API キー、回復コード）は削除されます。
+`webauthn.*` と `features.passwordBootstrap` は設定に残っていると
+起動が止まるので削除してください。3.3 のアプリケーション登録と
+`redmine.oauth.*` の設定を済ませたうえで起動し、全員が 8.2 の手順で
+ログインし直します（旧セッションは無効になります）。
 
 ---
 
@@ -321,7 +366,7 @@ RedmineDocker がすでにホスト Apache（`host-apache/redmine-proxy.conf`）
 # /redmine は RedmineDocker の設定（redmine-proxy.conf）がすでに処理する
 # ため、ここでは / だけを rmapp へ渡します。
 
-# 元のホスト名とスキームを渡します。これがないとパスキーの検証が失敗します
+# 元のホスト名とスキームを渡します。これがないと OAuth のリダイレクト URI やセッション Cookie の判定が崩れます
 ProxyPreserveHost On
 RequestHeader set X-Forwarded-Proto "https"
 
@@ -381,26 +426,27 @@ sudo systemctl status rmapp
 ## 11. 構築後の確認
 
 `scripts/test-stack.sh` が、起動中の RedmineDocker 開発スタックに対して
-サーバーの起動・ヘルスチェック（`/healthz` / `/readyz`）・許可リスト経由の
-Redmine 往復 1 件を自動で確認します。
+サーバーの起動・ヘルスチェック（`/healthz` / `/readyz`）・OAuth 認可
+リダイレクト（`state` と PKCE S256 の付与、状態 Cookie の束縛）・許可リスト
+経由の Redmine 往復 1 件を自動で確認します。
 
 ```bash
-RMAPP_STACK_API_KEY="取得した API キー" scripts/test-stack.sh
+token="$(scripts/redmine-seed-testdata.sh | tail -1 | cut -d= -f2-)"
+RMAPP_STACK_ACCESS_TOKEN="${token}" scripts/test-stack.sh
 ```
 
-`RMAPP_STACK_API_KEY`（3.3 で確認した API キー）は必須です。設定ファイルは
-既定で `server/config/config.yaml` を使います。別の設定を使う場合は
-`RMAPP_STACK_CONFIG` でパスを指定します。
+`redmine-seed-testdata.sh` は REST API の有効化とテストデータ投入に加え、
+Redmine 側（rails runner）で OAuth アクセストークンを発行して最終行に出力します
+（Redmine の API キーは使いません）。設定ファイルは既定で
+`server/config/config.yaml` を使います。別の設定は `RMAPP_STACK_CONFIG` で指定します。
 
-開発サンドボックスに Docker デーモンがなく手元で `scripts/test-stack.sh` を
-実行できない場合でも、GitHub Actions の `.github/workflows/stack-test.yml`
-（Stack Integration Test）が Docker デーモンを持つランナー上で
-RedmineDocker 開発スタックを起動し、`scripts/redmine-seed-testdata.sh` で
-REST API 有効化・テストデータ投入まで行った上で同じ確認を自動実行します
-（`workflow_dispatch` での手動実行、毎週の定期実行、関連ファイル変更時の
-push/pull_request で起動）。
+Docker デーモンのない環境では GitHub Actions の `.github/workflows/oauth-probe.yml`
+（push で起動）が RedmineDocker 開発スタックを起動し、Redmine 7 の OAuth の
+挙動の探査と、上記 2 スクリプトの実行までを自動で行います。
+`stack-test.yml` は同じ確認の定期実行版ですが、リポジトリが一定期間更新されないと
+GitHub に自動で無効化されるため、リポジトリ管理者が Actions 画面から再有効化してください。
 
-それ以外の項目（パスキー登録・ログイン、プロジェクト表示など）は
+ログイン画面の操作（Redmine のログイン・同意）やプロジェクト表示などは
 ブラウザでの手動確認が必要です。手動で確認する場合は表のとおりです。
 
 | 確認項目 | 方法 |
@@ -408,12 +454,12 @@ push/pull_request で起動）。
 | サーバーが応答する | `curl -i http://localhost:8090/healthz` が 200 を返す |
 | Redmine に到達できる | `curl -i http://localhost:8090/readyz` が 200 を返す |
 | SPA が表示される | ブラウザで開いてログイン画面が出る |
-| パスキーで登録できる | 初回登録が完了する |
-| パスキーでログインできる | 一度ログアウトして再ログインする |
+| Redmine でログインできる | 同意後にプロジェクト一覧へ戻る |
+| ログアウト後に再ログインできる | 設定画面からログアウトし、再度ログインする |
 | プロジェクトが見える | 一覧に Redmine のプロジェクトが並ぶ |
 | ツリーが正しい | 親子関係が Redmine と一致する |
 | チケットが見える | 一覧と詳細が表示される |
-| 2 台目が登録できる | 登録コードで別端末を追加できる |
+| 別端末でも使える | 別の端末で同じ手順でログインできる |
 
 ---
 
@@ -421,11 +467,12 @@ push/pull_request で起動）。
 
 | 症状 | 確認すること |
 |---|---|
-| パスキーのボタンが押せない | HTTPS でアクセスしているか。`localhost` 以外で http になっていないか |
-| 登録時に「操作できません」と出る | `webauthn.rpId` がアクセス中のドメインと一致しているか |
+| 認可画面で「リダイレクト URI が無効」と出る | `redmine.oauth.redirectURI` と Redmine のアプリケーション登録値が完全一致しているか（http は localhost のみ可） |
+| 「許可されなかった」と表示される | 同意画面で拒否していないか。スコープが Redmine の登録と一致しているか |
+| 起動時に `redmine.oauth.clientSecretFile` で止まる | `secrets/redmine_oauth_client_secret.txt` に Redmine の Client Secret を書いたか |
 | ログインは通るがプロジェクトが空 | Redmine の REST API が有効か。そのユーザーがプロジェクトに参加しているか |
 | Redmine への接続が 404 になる | `redmine.subURI` が RedmineDocker の `REDMINE_SUBURI`（既定 `/redmine`）と一致しているか |
-| `redmine_credential_invalid` が出る | Redmine 側で API キーが再生成されていないか |
+| `redmine_credential_invalid` が出る | Redmine の「マイアカウント」で本アプリの認可が取り消されていないか。設定画面の「Redmine で再認可」で復旧 |
 | 起動時に設定エラーで止まる | ログに出力されたキー名を確認する（起動時に自動検証される） |
 | Apache 経由で認証が失敗 | `ProxyPreserveHost On` と `X-Forwarded-Proto` が設定されているか |
 | Redmine スタック自体が不調 | RedmineDocker の `docs/Manual.md` / `scripts/test-stack.sh` で切り分ける |
