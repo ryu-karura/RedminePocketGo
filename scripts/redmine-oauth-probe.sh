@@ -57,7 +57,14 @@ JAR="${WORK}/jar"
 RESULTS=()
 record() { # 項目 結果
   RESULTS+=("$1|$2")
-  printf 'PROBE|%s|%s\n' "$1" "$2"
+  # 標準エラーへ出す（$(...) でコードを受け取る関数の中からも呼ばれるため、
+  # 標準出力に混ぜてはならない）。
+  printf 'PROBE|%s|%s\n' "$1" "$2" >&2
+}
+
+# 直近の HTML 応答を、タグを除いた短い平文にして標準エラーへ出す（診断用）。
+dump_text() { # ファイル
+  log "応答本文（タグ除去・先頭 700 字）: $(sed -e 's/<script[^>]*>.*<\/script>//g' -e 's/<[^>]*>/ /g' "$1" | tr -s ' \n\t' ' ' | head -c 700)"
 }
 
 PROBE_LOGIN="rmapp_probe"
@@ -209,9 +216,11 @@ authorize_code() {
     fi
     local f
     for f in "${fields[@]}"; do args+=(--data-urlencode "${f}"); done
+    log "承認フォームの項目: $(printf '%s\n' "${fields[@]}" | cut -d= -f1 | tr '\n' ' ')"
     out="$(curl -sS -b "${JAR}" -c "${JAR}" -o "${WORK}/authz2.html" \
             -w '%{http_code} %{redirect_url}' "${args[@]}" "${BASE}/oauth/authorize")"
     status="${out%% *}"; redirect="${out#* }"
+    [[ -z "${redirect}" ]] && dump_text "${WORK}/authz2.html"
   fi
   local code
   code="$(query_param "${redirect}" code)"
