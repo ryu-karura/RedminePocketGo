@@ -5,6 +5,10 @@
 -- 残るため、削除前に secure_delete を有効にして、解放されるページを 0 で上書きする。
 PRAGMA secure_delete = ON;
 
+-- 旧方式で発行したセッションは引き継がない（Redmine のログイン名が別人に再利用
+-- されても、旧 Cookie が新しい利用者の権限に結び付かないようにする）。
+DELETE FROM sessions;
+
 DROP TABLE IF EXISTS webauthn_challenges;
 DROP TABLE IF EXISTS enrollment_codes;
 DROP TABLE IF EXISTS credentials;

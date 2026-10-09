@@ -71,14 +71,28 @@ func TestMigrateKeepsLegacyRowsAndForeignKeys(t *testing.T) {
 		}
 	}
 
+	// 0002 だけを適用した時点で子テーブル（sessions）が残っていること。
+	body, err := fs.ReadFile(migrations.FS, "0002_oauth.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.applyMigration("0002_oauth.sql", string(body)); err != nil {
+		t.Fatalf("apply 0002: %v", err)
+	}
+	var kept int
+	if err := s.DB().QueryRow("SELECT COUNT(*) FROM sessions").Scan(&kept); err != nil || kept != 1 {
+		t.Fatalf("sessions after 0002 = %d, %v; want 1（作り直しで子テーブルが消えていないこと）", kept, err)
+	}
+
 	if err := s.Migrate(); err != nil {
 		t.Fatalf("Migrate on legacy DB: %v", err)
 	}
 
-	for table, want := range map[string]int{"users": 1, "sessions": 1} {
+	// 0003 は旧方式のセッションを破棄する（ログイン名の再利用で別人に結び付かないように）。
+	for table, want := range map[string]int{"users": 1, "sessions": 0} {
 		var n int
 		if err := s.DB().QueryRow("SELECT COUNT(*) FROM " + table).Scan(&n); err != nil || n != want {
-			t.Errorf("%s rows = %d, %v; want %d（作り直しで子テーブルが消えていないこと）", table, n, err, want)
+			t.Errorf("%s rows = %d, %v; want %d", table, n, err, want)
 		}
 	}
 	var login string

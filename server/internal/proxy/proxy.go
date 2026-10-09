@@ -128,6 +128,15 @@ func (p *Proxy) Handler(prefix string) http.HandlerFunc {
 			return
 		}
 
+		// クエリ文字列の key= も Redmine は API キーとして受け付けうる。
+		// ヘッダー同様に拒否する（API キー禁止。CLAUDE.md §9-1）。
+		for name := range r.URL.Query() {
+			if strings.EqualFold(name, "key") {
+				httpapi.WriteError(w, httpapi.CodeInvalidRequest, "the key query parameter must not be supplied by the client")
+				return
+			}
+		}
+
 		apiPath := strings.TrimPrefix(r.URL.Path, prefix)
 		if !strings.HasPrefix(apiPath, "/") {
 			apiPath = "/" + apiPath

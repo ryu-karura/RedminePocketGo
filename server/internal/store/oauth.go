@@ -48,7 +48,7 @@ func (s *Store) UpsertOAuthUser(ctx context.Context, redmineUserID int64, login,
 		}
 	case errors.Is(err, sql.ErrNoRows):
 		err = tx.QueryRowContext(ctx,
-			`SELECT id FROM users WHERE redmine_login = ? AND redmine_user_id IS NULL
+			`SELECT id FROM users WHERE redmine_login = ? COLLATE NOCASE AND redmine_user_id IS NULL
 			 ORDER BY created_at LIMIT 1`, login).Scan(&id)
 		switch {
 		case err == nil:

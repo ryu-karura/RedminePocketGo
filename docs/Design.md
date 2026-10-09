@@ -451,6 +451,7 @@ Redmine の `api_key` が含まれ、API キー禁止（CLAUDE.md §9-1）に反
 | ヘッダー | 扱い |
 |---|---|
 | `X-Redmine-API-Key` | サーバーも付与しない。受信したら 400 で拒否 |
+| クエリ `key=` | Redmine が API キーとして解釈しうるため、受信したら 400 で拒否（名前は大文字小文字を区別しない） |
 | `Authorization` | 受信したものは Redmine へ転送しない。サーバーが `Bearer <利用者のアクセストークン>` を付与する |
 | `Cookie` | Redmine へ転送しない |
 | `X-Redmine-Switch-User` | 受信・送信ともに禁止 |

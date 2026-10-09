@@ -245,8 +245,15 @@ func TestOAuthCallbackFailureMapping(t *testing.T) {
 			if sc := cookieNamed(rr, "rmapp_session"); sc != nil && sc.Value != "" {
 				t.Error("session cookie issued on failure")
 			}
-			if c := cookieNamed(rr, "rmapp_oauth_state"); c == nil || c.MaxAge >= 0 {
-				t.Errorf("state cookie must be cleared on every outcome: %+v", c)
+			// 発行元ブラウザの state と一致した要求だけが Cookie を消す。
+			// 無関係な要求（state 欠落）で進行中のログインを壊させない。
+			matched := strings.Contains(tt.query, "state=STATE123")
+			c := cookieNamed(rr, "rmapp_oauth_state")
+			if matched && (c == nil || c.MaxAge >= 0) {
+				t.Errorf("state cookie must be cleared when state matches: %+v", c)
+			}
+			if !matched && c != nil {
+				t.Errorf("state cookie must be left alone when state does not match: %+v", c)
 			}
 		})
 	}

@@ -95,10 +95,12 @@ func (h *OAuthHandler) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *OAuthHandler) callback(w http.ResponseWriter, r *http.Request) {
-	// state Cookie は成否に関わらず使い捨て。
-	http.SetCookie(w, h.stateCookie("", -1))
-
 	q := r.URL.Query()
+	// state Cookie は使い捨て。ただし発行元ブラウザの state と一致したときだけ消す。
+	// 無条件に消すと、他サイトからの GET で進行中のログインを壊せてしまう。
+	if h.stateCookieMatches(r, q.Get("state")) {
+		http.SetCookie(w, h.stateCookie("", -1))
+	}
 	key := limiterKey(r)
 	if h.Limiter != nil && !h.Limiter.Allow(key) {
 		h.redirectError(w, r, "rate_limited")

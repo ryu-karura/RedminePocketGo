@@ -107,6 +107,20 @@ func TestProxyRejectsInboundAPIKey(t *testing.T) {
 	}
 }
 
+func TestProxyRejectsAPIKeyQueryParameter(t *testing.T) {
+	up := newUpstream(t, 200, "{}", nil)
+	h := newProxy(t, up.URL, &fakeTokens{access: "tok"})
+
+	for _, q := range []string{"key=abc", "KEY=abc", "limit=1&key=abc"} {
+		req := authed(httptest.NewRequest("GET", "/api/redmine/issues.json?"+q, nil), "u1")
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		if rec.Code != 400 || !strings.Contains(rec.Body.String(), httpapi.CodeInvalidRequest) {
+			t.Errorf("%s: status = %d body = %s; want 400 invalid_request", q, rec.Code, rec.Body)
+		}
+	}
+}
+
 func TestProxyStripsForbiddenHeaders(t *testing.T) {
 	var upstreamHeaders http.Header
 	up := newUpstream(t, 200, "{}", func(r *http.Request) { upstreamHeaders = r.Header.Clone() })
