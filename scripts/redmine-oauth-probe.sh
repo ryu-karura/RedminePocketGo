@@ -181,6 +181,15 @@ if mode == "authenticity":
                 print(v)
                 sys.exit(0)
     sys.exit(1)
+if mode == "sudo-form":
+    for f in p.forms:
+        if "sudo_password" in dict(f["inputs"]):
+            print("ACTION=" + f["action"])
+            for n, v in f["inputs"]:
+                if n != "sudo_password":
+                    print(f"{n}={v}")
+            sys.exit(0)
+    sys.exit(1)
 if mode == "authorize-form":
     for f in p.forms:
         names = dict(f["inputs"])
@@ -229,7 +238,22 @@ authorize_code() {
     out="$(curl -sS -b "${JAR}" -c "${JAR}" -o "${WORK}/authz2.html" \
             -w '%{http_code} %{redirect_url}' "${args[@]}" "${BASE}/oauth/authorize")"
     status="${out%% *}"; redirect="${out#* }"
-    [[ -z "${redirect}" ]] && dump_text "${WORK}/authz2.html"
+    # Redmine の sudo モード: 同意の送信時にパスワード再確認が挟まる。
+    # 再確認フォームは元のパラメータを hidden で持ち回るので、
+    # sudo_password を足して送り直す。
+    if [[ -z "${redirect}" ]] && mapfile -t sudo < <(html_helper sudo-form "${WORK}/authz2.html" 2>/dev/null) && [[ "${#sudo[@]}" -gt 0 ]]; then
+      record "${label}: 同意時のパスワード再確認" "Redmine の sudo モードが要求した（POST /oauth/authorize が 200 でパスワード再確認フォームを返す）"
+      local action="${sudo[0]#ACTION=}" sargs=()
+      for f in "${sudo[@]:1}"; do sargs+=(--data-urlencode "${f}"); done
+      [[ "${action}" == /* ]] && action="${REDMINE_BASE_URL}${action}"
+      out="$(curl -sS -b "${JAR}" -c "${JAR}" -o "${WORK}/authz3.html" \
+              -w '%{http_code} %{redirect_url}' "${sargs[@]}" \
+              --data-urlencode "sudo_password=${PROBE_PASSWORD}" "${action}")"
+      status="${out%% *}"; redirect="${out#* }"
+      [[ -z "${redirect}" ]] && dump_text "${WORK}/authz3.html"
+    elif [[ -z "${redirect}" ]]; then
+      dump_text "${WORK}/authz2.html"
+    fi
   fi
   local code
   code="$(query_param "${redirect}" code)"
