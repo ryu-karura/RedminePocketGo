@@ -64,7 +64,16 @@ record() { # 項目 結果
 
 # 直近の HTML 応答を、タグを除いた短い平文にして標準エラーへ出す（診断用）。
 dump_text() { # ファイル
-  log "応答本文（タグ除去・先頭 700 字）: $(sed -e 's/<script[^>]*>.*<\/script>//g' -e 's/<[^>]*>/ /g' "$1" | tr -s ' \n\t' ' ' | head -c 700)"
+  log "応答本文（<body> 以降・タグ除去・先頭 900 字）: $(python3 - "$1" <<'PY'
+import re, sys
+t = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+m = re.search(r"<body.*", t, re.S | re.I)
+t = m.group(0) if m else t
+t = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", t, flags=re.S | re.I)
+t = re.sub(r"<[^>]+>", " ", t)
+print(re.sub(r"\s+", " ", t)[:900])
+PY
+)"
 }
 
 PROBE_LOGIN="rmapp_probe"
