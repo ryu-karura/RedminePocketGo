@@ -34,9 +34,17 @@ jobs:
           ref: main
           path: redminedocker
 
+      # RedmineDocker の scripts/generate-secrets.sh は `tr | head -c 24` が
+      # SIGPIPE（tr: write error: Broken pipe）で失敗するため使わない
+      # （RedmineDocker 側の不具合。本リポジトリでは変更しない — CLAUDE.md §9-6）。
+      # 同じファイル名・形式（改行なし）でここで生成する。
       - name: RedmineDocker のシークレットを生成
         working-directory: redminedocker
-        run: bash scripts/generate-secrets.sh
+        run: |
+          mkdir -p secrets && chmod 700 secrets
+          printf '%s' "$(openssl rand -hex 12)" > secrets/db_password.txt
+          printf '%s' "$(openssl rand -hex 64)" > secrets/secret_key_base.txt
+          chmod 600 secrets/*.txt
 
       - name: RedmineDocker 開発スタックを起動
         working-directory: redminedocker
