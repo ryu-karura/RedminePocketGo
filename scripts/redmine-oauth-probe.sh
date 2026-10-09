@@ -131,6 +131,11 @@ puts "ISSUE_ID=#{issue.id}"
 puts "CLIENT_ID=#{app.uid}"
 puts "CLIENT_SECRET=#{app.plaintext_secret}"
 puts "PERMISSIONS=#{Redmine::AccessControl.permissions.map(&:name).join(' ')}"
+# リダイレクト URI の検証（開発の http://localhost を受け付けるか。docs/Setup.md の根拠）
+%w[http://localhost:8090/api/auth/callback http://127.0.0.1:8090/api/auth/callback https://rmapp.example.test/api/auth/callback http://rmapp.example.test/api/auth/callback].each_with_index do |uri, i|
+  a = Doorkeeper::Application.new(name: "probe-uri-#{i}", redirect_uri: uri, scopes: 'view_issues', confidential: true)
+  puts "URI_CHECK_#{i}=#{uri} => #{a.valid? ? 'accepted' : a.errors.full_messages.join(', ')}"
+end
 # 管理者向けの登録画面の場所（docs/Setup.md の手順の根拠）
 puts "OAUTH_ROUTES=#{Rails.application.routes.routes.map { |r| r.path.spec.to_s.sub('(.:format)', '') }.grep(/oauth/).uniq.sort.join(' ')}"
 admin_items = Redmine::MenuManager.items(:admin_menu).select { |i| i.name.to_s =~ /oauth|application/i }
@@ -147,6 +152,9 @@ CLIENT_SECRET="$(pick CLIENT_SECRET)"
   || die "前提の払い出しに失敗しました（出力を確認してください）"
 printf '::add-mask::%s\n' "${CLIENT_SECRET}" >&2
 record "Redmine 権限名一覧（スコープの候補）" "$(pick PERMISSIONS)"
+for i in 0 1 2 3; do
+  record "リダイレクト URI の検証 ${i}" "$(pick "URI_CHECK_${i}")"
+done
 record "管理者向け OAuth 関連ルート" "$(pick OAUTH_ROUTES)"
 record "管理メニューの OAuth 関連項目（名前|URL|日本語キャプション）" "$(pick OAUTH_ADMIN_MENU)"
 
