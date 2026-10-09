@@ -35,6 +35,11 @@ async function request(method, path, body) {
 
   if (!resp.ok) {
     const env = data && data.error ? data.error : {};
+    // Redmine との連携が使えなくなった（トークンの失効・取り消し）。画面ごとに
+    // 扱わず、アプリ全体で再認可の案内を出す（app.js が購読する。Design.md §7.5）。
+    if (resp.status === 409 && env.code === 'redmine_credential_invalid' && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('rmapp:reauth-required'));
+    }
     throw new ApiError(resp.status, env.code, env.message);
   }
   return data;

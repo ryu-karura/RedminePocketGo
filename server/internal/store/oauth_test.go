@@ -1,9 +1,13 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -61,7 +65,6 @@ func TestMigrateKeepsLegacyRowsAndForeignKeys(t *testing.T) {
 		`INSERT INTO users (id, redmine_login, display_name, webauthn_user_handle) VALUES ('u1', 'alice', 'Alice', X'01')`,
 		`INSERT INTO credentials (id, user_id, public_key) VALUES (X'AA', 'u1', X'BB')`,
 		`INSERT INTO sessions (id, user_id, absolute_expires_at) VALUES ('sess-hash', 'u1', '2099-01-01T00:00:00Z')`,
-		`INSERT INTO redmine_credentials (user_id, api_key_ciphertext, api_key_nonce) VALUES ('u1', X'01', X'02')`,
 	} {
 		if _, err := s.DB().Exec(q); err != nil {
 			t.Fatalf("seed legacy row: %v\n%s", err, q)
@@ -72,22 +75,21 @@ func TestMigrateKeepsLegacyRowsAndForeignKeys(t *testing.T) {
 		t.Fatalf("Migrate on legacy DB: %v", err)
 	}
 
-	for table, want := range map[string]int{"users": 1, "credentials": 1, "sessions": 1, "redmine_credentials": 1} {
+	for table, want := range map[string]int{"users": 1, "sessions": 1} {
 		var n int
 		if err := s.DB().QueryRow("SELECT COUNT(*) FROM " + table).Scan(&n); err != nil || n != want {
 			t.Errorf("%s rows = %d, %v; want %d（作り直しで子テーブルが消えていないこと）", table, n, err, want)
 		}
 	}
 	var login string
-	var handle []byte
 	var rmID *int64
 	if err := s.DB().QueryRow(
-		`SELECT redmine_login, webauthn_user_handle, redmine_user_id FROM users WHERE id='u1'`,
-	).Scan(&login, &handle, &rmID); err != nil {
+		`SELECT redmine_login, redmine_user_id FROM users WHERE id='u1'`,
+	).Scan(&login, &rmID); err != nil {
 		t.Fatalf("read migrated user: %v", err)
 	}
-	if login != "alice" || len(handle) != 1 || rmID != nil {
-		t.Errorf("migrated user = %q %v %v; want alice, handle kept, redmine_user_id NULL", login, handle, rmID)
+	if login != "alice" || rmID != nil {
+		t.Errorf("migrated user = %q %v; want alice, redmine_user_id NULL", login, rmID)
 	}
 
 	// 外部キー制約は適用後も有効であること（PRAGMA を戻し忘れていない）。
@@ -98,17 +100,24 @@ func TestMigrateKeepsLegacyRowsAndForeignKeys(t *testing.T) {
 	if _, err := s.DB().Exec(`INSERT INTO sessions (id, user_id, absolute_expires_at) VALUES ('x', 'ghost', '2099-01-01T00:00:00Z')`); err == nil {
 		t.Error("dangling sessions.user_id accepted after migration")
 	}
+
+	// 旧行は初回の OAuth ログインでログイン名から引き継がれる。
+	u, err := s.UpsertOAuthUser(context.Background(), 9, "alice", "Alice")
+	if err != nil || u.ID != "u1" || u.RedmineUserID != 9 {
+		t.Errorf("legacy adoption = %+v, %v; want id u1 with redmine_user_id 9", u, err)
+	}
 }
 
 func TestMigratedUsersSchema(t *testing.T) {
 	s := freshStore(t)
-	// OAuth の利用者は WebAuthn ハンドルを持たない（NULL を複数許す）。
 	for _, q := range []string{
 		`INSERT INTO users (id, redmine_login, redmine_user_id) VALUES ('a', 'alice', 1)`,
 		`INSERT INTO users (id, redmine_login, redmine_user_id) VALUES ('b', 'bob', 2)`,
+		`INSERT INTO users (id, redmine_login) VALUES ('legacy1', 'old1')`, // 未紐付けの旧行（NULL）は複数あってよい
+		`INSERT INTO users (id, redmine_login) VALUES ('legacy2', 'old2')`,
 	} {
 		if _, err := s.DB().Exec(q); err != nil {
-			t.Fatalf("insert user without handle: %v", err)
+			t.Fatalf("insert user: %v\n%s", err, q)
 		}
 	}
 	// redmine_user_id は一意。
@@ -150,7 +159,7 @@ func TestUpsertOAuthUser(t *testing.T) {
 
 	t.Run("adopts a legacy row by login", func(t *testing.T) {
 		s := freshStore(t)
-		if err := s.CreateUser(ctx, &User{ID: "legacy", RedmineLogin: "bob", WebAuthnUserHandle: []byte{9}}); err != nil {
+		if _, err := s.DB().Exec(`INSERT INTO users (id, redmine_login) VALUES ('legacy', 'bob')`); err != nil {
 			t.Fatal(err)
 		}
 		u, err := s.UpsertOAuthUser(ctx, 42, "bob", "Bob")
@@ -320,5 +329,124 @@ func TestOAuthStateConsumeIsAtomic(t *testing.T) {
 	wg.Wait()
 	if wins.Load() != 1 {
 		t.Errorf("successful consumes = %d; want exactly 1", wins.Load())
+	}
+}
+
+// ---- 0003: 旧方式（パスキー・API キー）の削除 ----
+
+func TestMigrateDropsLegacySchema(t *testing.T) {
+	s := freshStore(t)
+	for _, table := range []string{"credentials", "redmine_credentials", "enrollment_codes", "webauthn_challenges"} {
+		var name string
+		err := s.DB().QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)
+		if err == nil {
+			t.Errorf("legacy table %s still exists", table)
+		}
+	}
+	for table, col := range map[string]string{"users": "webauthn_user_handle", "sessions": "credential_id"} {
+		rows, err := s.DB().Query("PRAGMA table_info(" + table + ")")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var cid int
+			var name, typ string
+			var notnull, pk int
+			var dflt any
+			if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+				t.Fatal(err)
+			}
+			if name == col {
+				t.Errorf("%s.%s still exists", table, col)
+			}
+		}
+		rows.Close()
+	}
+}
+
+func TestMigrateDoesNotLeaveAPIKeyCiphertextOnDisk(t *testing.T) {
+	// 旧 API キーの暗号文は、削除後のファイルに残さない（DROP だけでは空きページに
+	// 残るため secure_delete で消す）。
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy.db")
+	s, err := Open("file:" + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	applyOnlyInit(t, s)
+	pattern := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 24)
+	for _, q := range []string{
+		`INSERT INTO users (id, redmine_login, webauthn_user_handle) VALUES ('u1', 'alice', X'01')`,
+	} {
+		if _, err := s.DB().Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.DB().Exec(
+		`INSERT INTO redmine_credentials (user_id, api_key_ciphertext, api_key_nonce) VALUES ('u1', ?, X'02')`, pattern); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(path); !bytes.Contains(raw, pattern) {
+		t.Skip("test setup: pattern not found in the DB file before migrating")
+	}
+
+	if err := s.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if _, err := s.DB().Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if bytes.Contains(raw, pattern) {
+		t.Error("legacy API key ciphertext is still present in the database file after migration")
+	}
+}
+
+func TestSessionsKeepWorkingAfterLegacyDrop(t *testing.T) {
+	ctx := context.Background()
+	s := freshStore(t)
+	u, err := s.UpsertOAuthUser(ctx, 3, "carol", "Carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	for i, abs := range []time.Time{now.Add(time.Hour), now.Add(time.Hour), now.Add(-time.Hour)} {
+		if err := s.InsertSession(ctx, &Session{
+			IDHash: fmt.Sprintf("h%d", i), UserID: u.ID, CreatedAt: now, LastSeenAt: now, AbsoluteExpiresAt: abs,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := s.CountActiveSessions(ctx, u.ID, now)
+	if err != nil || n != 2 {
+		t.Errorf("CountActiveSessions = %d, %v; want 2（期限切れは数えない）", n, err)
+	}
+	if n, _ := s.CountActiveSessions(ctx, "nobody", now); n != 0 {
+		t.Errorf("CountActiveSessions(nobody) = %d", n)
+	}
+}
+
+func TestDeleteOAuthTokens(t *testing.T) {
+	ctx := context.Background()
+	s := freshStore(t)
+	u, _ := s.UpsertOAuthUser(ctx, 1, "alice", "A")
+	if err := s.SaveOAuthTokens(ctx, OAuthTokens{
+		UserID: u.ID, AccessCiphertext: []byte("a"), AccessNonce: []byte("n"),
+		RefreshCiphertext: []byte("r"), RefreshNonce: []byte("n"), KeyVersion: 1, AccessExpiresAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteOAuthTokens(ctx, u.ID); err != nil {
+		t.Fatalf("DeleteOAuthTokens: %v", err)
+	}
+	if got, _ := s.GetOAuthTokens(ctx, u.ID); got != nil {
+		t.Error("tokens still present")
+	}
+	if err := s.DeleteOAuthTokens(ctx, u.ID); err != nil {
+		t.Errorf("deleting twice should be a no-op: %v", err)
 	}
 }

@@ -1,8 +1,11 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -11,20 +14,31 @@ import (
 
 	"github.com/ryu-karura/RedminePocketGo/server/internal/credential"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/httpapi"
+	"github.com/ryu-karura/RedminePocketGo/server/internal/redmine"
 )
 
-// KeyLoader は中継対象ユーザーの API キーを取り出す（credential.Vault が実装）。
-type KeyLoader interface {
-	LoadAPIKey(ctx context.Context, userID string) (*credential.APIKey, error)
+// TokenSource は中継対象ユーザーの OAuth アクセストークンを供給する
+// （credential.Manager が実装。Design.md §4.4）。
+type TokenSource interface {
+	// AccessToken は有効なアクセストークンを返す（期限が近ければ更新済み）。
+	AccessToken(ctx context.Context, userID string) (string, error)
+	// ForceRefresh は上流が staleAccess を 401 で拒否したときに呼ぶ。
+	ForceRefresh(ctx context.Context, userID, staleAccess string) (string, error)
+	// MarkInvalid は更新後も上流に拒否される組を無効にする（再認可を求める）。
 	MarkInvalid(ctx context.Context, userID string) error
 }
 
-// headerAPIKey はサーバーが付与する Redmine 認証ヘッダー。受信したら 400。
+// maxBodyBytes は中継する要求本文の上限。許可リストの書き込みは小さな JSON
+// だけで、上流 401 後の再送のために本文をメモリに保持する。
+const maxBodyBytes = 4 << 20
+
+// headerAPIKey は受信したら 400 で拒否するヘッダー。サーバー自身も送らない
+// （Redmine の API キーは一切使わない。CLAUDE.md §9-1）。
 const headerAPIKey = "X-Redmine-Api-Key"
 
 // stripHeaders は上流へ絶対に転送しないエンドツーエンドヘッダー（Design.md
-// §6.3）。ホップバイホップヘッダー（Connection 等）は ReverseProxy が
-// 別途除去する。
+// §6.3）。Authorization は利用者のものを除去し、サーバーが Bearer を付け直す。
+// ホップバイホップヘッダー（Connection 等）は ReverseProxy が別途除去する。
 var stripHeaders = []string{
 	"Authorization",
 	"Cookie",
@@ -32,34 +46,37 @@ var stripHeaders = []string{
 	headerAPIKey,
 }
 
-// 上流ステータスを内部エラーへ写像するための番兵（ModifyResponse →
-// ErrorHandler で受け渡す）。
-var (
-	errUpstream401 = errors.New("proxy: upstream 401")
-	errUpstream5xx = errors.New("proxy: upstream 5xx")
-)
+// errUpstream5xx は上流 5xx を ErrorHandler へ渡すための番兵。
+var errUpstream5xx = errors.New("proxy: upstream 5xx")
+
+// errUpstream401 は上流 401 の番兵。ErrorHandler は何も書かずに記録だけし、
+// Handler が更新して 1 回だけ再試行する（まだ何もクライアントへ書いていない）。
+var errUpstream401 = errors.New("proxy: upstream 401")
 
 type ctxKey int
 
 const (
 	ctxKeyUpstream ctxKey = iota
-	ctxKeyUserID
+	ctxKeyAttempt
 )
 
 type upstreamTarget struct {
-	rawPath  string // サブ URI 込みのエスケープ済みパス
-	rawQuery string
-	apiKey   string
+	rawPath     string // サブ URI 込みのエスケープ済みパス
+	rawQuery    string
+	accessToken string
 }
+
+// attempt は 1 回の中継の結果を ErrorHandler から Handler へ持ち帰る。
+type attempt struct{ unauthorized bool }
 
 // Proxy は許可リストに従って Redmine REST API へ中継する。
 // 中継は httputil.ReverseProxy に委ね、ホップバイホップヘッダー除去・
 // 応答ヘッダーとエンコーディングの透過・ストリーミングを正しく扱う。
 // RoundTripper はリダイレクトを追従しないため、上流の 3xx でヘッダー
-// （付与した API キー）が外部へ再送される事故も起きない。
+// （付与したアクセストークン）が外部へ再送される事故も起きない。
 type Proxy struct {
 	rp      *httputil.ReverseProxy
-	loader  KeyLoader
+	tokens  TokenSource
 	base    *url.URL // baseURL + subURI を結合した上流ルート
 	subURI  string
 	timeout time.Duration
@@ -72,7 +89,7 @@ type Config struct {
 	Timeout time.Duration
 }
 
-func New(loader KeyLoader, cfg Config) *Proxy {
+func New(tokens TokenSource, cfg Config) *Proxy {
 	// サブ URI 結合はここだけで行う（ハードコード禁止。Design.md §6.1）。
 	base, err := url.Parse(strings.TrimSuffix(cfg.BaseURL, "/") + cfg.SubURI)
 	if err != nil {
@@ -81,7 +98,7 @@ func New(loader KeyLoader, cfg Config) *Proxy {
 		base = &url.URL{}
 	}
 	p := &Proxy{
-		loader:  loader,
+		tokens:  tokens,
 		base:    base,
 		subURI:  cfg.SubURI,
 		timeout: cfg.Timeout,
@@ -120,16 +137,20 @@ func (p *Proxy) Handler(prefix string) http.HandlerFunc {
 			return
 		}
 
-		key, err := p.loader.LoadAPIKey(r.Context(), sess.UserID)
-		if err != nil {
-			switch {
-			case errors.Is(err, credential.ErrNoCredential):
-				httpapi.WriteError(w, httpapi.CodeRedmineCredentialInvalid, "redmine account not linked")
-			case errors.Is(err, credential.ErrCredentialInvalid):
-				httpapi.WriteError(w, httpapi.CodeRedmineCredentialInvalid, "redmine credential is invalid; re-link required")
-			default:
-				httpapi.WriteError(w, httpapi.CodeInternalError, "credential load failed")
+		// 上流 401 の後に同じ要求を再送できるよう、本文は先に読み切る。
+		var body []byte
+		if r.Body != nil && r.Body != http.NoBody {
+			var err error
+			body, err = io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+			if err != nil {
+				httpapi.WriteError(w, httpapi.CodeInvalidRequest, "request body is too large or unreadable")
+				return
 			}
+		}
+
+		token, err := p.tokens.AccessToken(r.Context(), sess.UserID)
+		if err != nil {
+			p.writeTokenError(w, err, "token load failed")
 			return
 		}
 
@@ -138,21 +159,67 @@ func (p *Proxy) Handler(prefix string) http.HandlerFunc {
 		if !strings.HasPrefix(escapedAPIPath, "/") {
 			escapedAPIPath = "/" + escapedAPIPath
 		}
-
-		ctx := r.Context()
-		if p.timeout > 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, p.timeout)
-			defer cancel()
-		}
-		ctx = context.WithValue(ctx, ctxKeyUpstream, upstreamTarget{
+		target := upstreamTarget{
 			rawPath:  singleJoin(p.base.EscapedPath(), escapedAPIPath),
 			rawQuery: r.URL.RawQuery,
-			apiKey:   key.Value(),
-		})
-		ctx = context.WithValue(ctx, ctxKeyUserID, sess.UserID)
+		}
 
-		p.rp.ServeHTTP(w, r.WithContext(ctx))
+		// 1 回目。上流 401（アクセストークンの失効）なら、更新して 1 回だけ再試行する。
+		if !p.relay(w, r, body, target, token) {
+			return
+		}
+		token, err = p.tokens.ForceRefresh(r.Context(), sess.UserID, token)
+		if err != nil {
+			p.writeTokenError(w, err, "token refresh failed")
+			return
+		}
+		if !p.relay(w, r, body, target, token) {
+			return
+		}
+		// 更新したばかりのトークンまで拒否される: 組を無効にして再認可を求める。
+		if err := p.tokens.MarkInvalid(r.Context(), sess.UserID); err != nil {
+			slog.Warn("marking OAuth tokens invalid failed", "error", err)
+		}
+		httpapi.WriteError(w, httpapi.CodeRedmineCredentialInvalid, "redmine rejected the refreshed token; re-authorization required")
+	}
+}
+
+// relay は 1 回分の中継を行う。上流が 401 を返し、まだクライアントへ何も
+// 書いていない場合に限って true（再試行可）を返す。それ以外は応答を書き終えている。
+func (p *Proxy) relay(w http.ResponseWriter, r *http.Request, body []byte, target upstreamTarget, token string) (unauthorized bool) {
+	ctx := r.Context()
+	if p.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+	}
+	att := &attempt{}
+	target.accessToken = token
+	ctx = context.WithValue(ctx, ctxKeyUpstream, target)
+	ctx = context.WithValue(ctx, ctxKeyAttempt, att)
+
+	req := r.Clone(ctx)
+	if body != nil {
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.ContentLength = int64(len(body))
+	}
+	p.rp.ServeHTTP(w, req)
+	return att.unauthorized
+}
+
+// writeTokenError はトークン取得・更新の失敗をエンベロープへ写像する。
+func (p *Proxy) writeTokenError(w http.ResponseWriter, err error, internalMsg string) {
+	switch {
+	case errors.Is(err, credential.ErrNoCredential):
+		httpapi.WriteError(w, httpapi.CodeRedmineCredentialInvalid, "redmine account not linked")
+	case errors.Is(err, credential.ErrCredentialInvalid):
+		httpapi.WriteError(w, httpapi.CodeRedmineCredentialInvalid, "redmine credential is invalid; re-authorization required")
+	case errors.Is(err, redmine.ErrUpstream):
+		httpapi.WriteError(w, httpapi.CodeUpstreamError, "redmine upstream error during token refresh")
+	default:
+		// クライアント設定不備・保存失敗・想定外。詳細はログのみ。
+		slog.Error("token handling failed in relay", "error", err)
+		httpapi.WriteError(w, httpapi.CodeInternalError, internalMsg)
 	}
 }
 
@@ -170,15 +237,15 @@ func (p *Proxy) rewrite(pr *httputil.ProxyRequest) {
 	pr.Out.URL = &out
 	pr.Out.Host = p.base.Host
 
-	// 転送禁止のエンドツーエンドヘッダーを除去してから API キーを付与する。
+	// 転送禁止のエンドツーエンドヘッダーを除去してから Bearer を付与する。
 	for _, h := range stripHeaders {
 		pr.Out.Header.Del(h)
 	}
-	pr.Out.Header.Set(headerAPIKey, tgt.apiKey)
+	pr.Out.Header.Set("Authorization", "Bearer "+tgt.accessToken)
 }
 
 // modifyResponse は上流ステータスを内部エラーへ写像する。番兵を返すと
-// ReverseProxy が ErrorHandler を呼ぶ。
+// ReverseProxy が ErrorHandler を呼ぶ（その時点で応答はまだ書かれていない）。
 func modifyResponse(resp *http.Response) error {
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
@@ -192,11 +259,10 @@ func modifyResponse(resp *http.Response) error {
 func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, errUpstream401):
-		// 上流 401 = 保存済みキーが無効。無効化して 409 で再紐付けを促す。
-		if userID, ok := r.Context().Value(ctxKeyUserID).(string); ok {
-			_ = p.loader.MarkInvalid(r.Context(), userID)
+		// 何も書かずに記録だけ。Handler が更新して再試行するか、409 を返す。
+		if att, ok := r.Context().Value(ctxKeyAttempt).(*attempt); ok {
+			att.unauthorized = true
 		}
-		httpapi.WriteError(w, httpapi.CodeRedmineCredentialInvalid, "redmine credential is invalid; re-link required")
 	case errors.Is(err, errUpstream5xx):
 		httpapi.WriteError(w, httpapi.CodeUpstreamError, "redmine upstream error")
 	default:

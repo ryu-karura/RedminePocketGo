@@ -403,3 +403,37 @@ func TestManagerPersistFailureIsReported(t *testing.T) {
 		t.Errorf("error leaks tokens: %v", err)
 	}
 }
+
+func TestNewVaultRejectsBadKEK(t *testing.T) {
+	st, err := store.Open("file:" + filepath.Join(t.TempDir(), "k.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, n := range []int{0, 16, 31, 33, 64} {
+		if _, err := NewVault(st, make([]byte, n), 1); err == nil {
+			t.Errorf("KEK of %d bytes accepted; AES-256 needs exactly 32", n)
+		}
+	}
+}
+
+func TestNonceIsFreshOnEverySave(t *testing.T) {
+	ctx := context.Background()
+	v, st, uid := newTokenVault(t)
+	var nonces [][]byte
+	for i := 0; i < 3; i++ {
+		// 同じ平文を保存し直しても、ノンスは毎回変わる（再利用は GCM では致命的）。
+		if err := v.SaveTokens(ctx, uid, tokenSet("SAME", "SAME", t0.Add(time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+		rec, _ := st.GetOAuthTokens(ctx, uid)
+		nonces = append(nonces, rec.AccessNonce, rec.RefreshNonce)
+	}
+	seen := map[string]bool{}
+	for _, n := range nonces {
+		if seen[string(n)] {
+			t.Fatalf("nonce %x reused", n)
+		}
+		seen[string(n)] = true
+	}
+}

@@ -23,15 +23,17 @@ import (
 
 const stackTestUserID = "stacktest-user"
 
-// staticKeyLoader は保管庫（credential.Vault）を介さず、環境変数から得た
-// 実 API キーをそのまま返す proxy.KeyLoader 実装。credential.NewTestAPIKey
-// はまさにこの「中継層のテストで保管庫を介さない配線」向けに用意されている。
-type staticKeyLoader struct{ key string }
+// staticTokens は保管庫・更新を介さず、環境変数から得た実アクセストークンを
+// そのまま返す proxy.TokenSource 実装。トークンは scripts/redmine-seed-testdata.sh が
+// Redmine 側（rails runner）で発行する。Redmine の API キーは使わない
+// （CLAUDE.md §9-1）。401 のときは更新せず、そのまま失敗させる。
+type staticTokens struct{ token string }
 
-func (s staticKeyLoader) LoadAPIKey(context.Context, string) (*credential.APIKey, error) {
-	return credential.NewTestAPIKey(s.key), nil
+func (s staticTokens) AccessToken(context.Context, string) (string, error) { return s.token, nil }
+func (s staticTokens) ForceRefresh(_ context.Context, _, _ string) (string, error) {
+	return "", credential.ErrCredentialInvalid
 }
-func (s staticKeyLoader) MarkInvalid(context.Context, string) error { return nil }
+func (s staticTokens) MarkInvalid(context.Context, string) error { return nil }
 
 func withStackTestSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,9 +46,9 @@ func withStackTestSession(next http.Handler) http.Handler {
 // 実際の Redmine へ中継し、有効な JSON が返ることを確認する
 // (CLAUDE.md §5「許可リスト経由の往復 1 件」)。
 func TestProxyRoundTripAgainstRealRedmine(t *testing.T) {
-	apiKey := os.Getenv("RMAPP_STACK_API_KEY")
-	if apiKey == "" {
-		t.Fatal("RMAPP_STACK_API_KEY が未設定です。docs/Setup.md §3.3 の手順で取得した Redmine API キーを設定してください")
+	accessToken := os.Getenv("RMAPP_STACK_ACCESS_TOKEN")
+	if accessToken == "" {
+		t.Fatal("RMAPP_STACK_ACCESS_TOKEN が未設定です。scripts/redmine-seed-testdata.sh が Redmine で発行する OAuth アクセストークンを設定してください")
 	}
 	cfgPath := os.Getenv("RMAPP_STACK_CONFIG")
 	if cfgPath == "" {
@@ -58,7 +60,7 @@ func TestProxyRoundTripAgainstRealRedmine(t *testing.T) {
 		t.Fatalf("設定の読み込みに失敗しました（%s）: %v", cfgPath, err)
 	}
 
-	relay := proxy.New(staticKeyLoader{key: apiKey}, proxy.Config{
+	relay := proxy.New(staticTokens{token: accessToken}, proxy.Config{
 		BaseURL: cfg.Redmine.BaseURL,
 		SubURI:  cfg.Redmine.SubURI,
 		Timeout: time.Duration(cfg.Redmine.TimeoutSeconds) * time.Second,
@@ -81,7 +83,7 @@ func TestProxyRoundTripAgainstRealRedmine(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d; want 200（許可リスト経由の Redmine 往復に失敗。"+
-			"redmine.baseURL/subURI と API キーを確認してください）", resp.StatusCode)
+			"redmine.baseURL/subURI とアクセストークンを確認してください）", resp.StatusCode)
 	}
 	var body struct {
 		Issues []json.RawMessage `json:"issues"`

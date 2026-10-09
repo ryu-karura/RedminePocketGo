@@ -1,6 +1,6 @@
 // Package store は SQLite 永続化を担う。テンプレートのインメモリ実装と
-// 異なり、users / credentials / sessions を再起動を跨いで保持する
-// （パスキーは長寿命であり、再起動で全員ログアウトさせないため）。
+// 異なり、users / oauth_tokens / sessions を再起動を跨いで保持する
+// （リフレッシュトークンは長寿命であり、再起動で全員ログアウトさせないため）。
 package store
 
 import (

@@ -9,383 +9,239 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ryu-karura/RedminePocketGo/server/internal/store"
 )
-
-type fakeWebAuthn struct {
-	beginErr, finishErr error
-	userID              string
-}
-
-func (f *fakeWebAuthn) BeginRegistration(context.Context, string) ([]byte, string, error) {
-	return []byte(`{"publicKey":{}}`), "ch-1", f.beginErr
-}
-func (f *fakeWebAuthn) FinishRegistration(_ context.Context, _ string, _ *http.Request) (string, []byte, error) {
-	return f.userID, []byte{1}, f.finishErr
-}
-func (f *fakeWebAuthn) BeginLogin(context.Context) ([]byte, string, error) {
-	return []byte(`{"publicKey":{}}`), "ch-2", f.beginErr
-}
-func (f *fakeWebAuthn) FinishLogin(_ context.Context, _ string, _ *http.Request) (string, []byte, error) {
-	return f.userID, []byte{1}, f.finishErr
-}
-
-type fakeSessions struct{ issueErr error }
-
-func (f *fakeSessions) Issue(context.Context, string, []byte) (string, error) {
-	return "tok-1", f.issueErr
-}
-func (f *fakeSessions) Revoke(context.Context, string) error { return nil }
-func (f *fakeSessions) Cookie(token string) *http.Cookie {
-	return &http.Cookie{Name: "rmapp_session", Value: token, Path: "/"}
-}
-func (f *fakeSessions) ClearCookie() *http.Cookie {
-	return &http.Cookie{Name: "rmapp_session", Value: "", Path: "/", MaxAge: -1}
-}
 
 func authedCtx(r *http.Request) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), ctxKeySession, &SessionInfo{UserID: "u1"}))
 }
 
-func newAuthMux(wa *fakeWebAuthn, ss *fakeSessions) *http.ServeMux {
-	mux := http.NewServeMux()
-	(&AuthHandler{WebAuthn: wa, Sessions: ss}).RegisterRoutes(mux)
-	return mux
+type fakeUsers struct {
+	users map[string]*store.User
+	err   error
 }
 
-func TestAuthEndpoints(t *testing.T) {
-	tests := []struct {
-		name       string
-		path       string
-		authed     bool
-		wa         fakeWebAuthn
-		ss         fakeSessions
-		wantStatus int
-		wantBody   string // 部分一致
-		wantCookie bool
-	}{
-		{"register begin unauthenticated", "/api/auth/register/begin", false,
-			fakeWebAuthn{}, fakeSessions{}, 401, CodeUnauthenticated, false},
-		{"register begin ok", "/api/auth/register/begin", true,
-			fakeWebAuthn{}, fakeSessions{}, 200, `"challengeId":"ch-1"`, false},
-		{"register begin service failure", "/api/auth/register/begin", true,
-			fakeWebAuthn{beginErr: fmt.Errorf("db down")}, fakeSessions{}, 500, CodeInternalError, false},
-		{"register finish without challengeId", "/api/auth/register/finish", false,
-			fakeWebAuthn{}, fakeSessions{}, 400, CodeInvalidRequest, false},
-		{"register finish malformed ceremony", "/api/auth/register/finish?challengeId=x", false,
-			fakeWebAuthn{finishErr: fmt.Errorf("%w: bad attestation", ErrInvalidRequest)},
-			fakeSessions{}, 400, CodeInvalidRequest, false},
-		{"register finish ok issues session", "/api/auth/register/finish?challengeId=x", false,
-			fakeWebAuthn{userID: "u1"}, fakeSessions{}, 200, `"userId":"u1"`, true},
-		{"login begin ok", "/api/auth/login/begin", false,
-			fakeWebAuthn{}, fakeSessions{}, 200, `"challengeId":"ch-2"`, false},
-		{"login finish without challengeId", "/api/auth/login/finish", false,
-			fakeWebAuthn{}, fakeSessions{}, 400, CodeInvalidRequest, false},
-		{"login finish bad assertion is 401", "/api/auth/login/finish?challengeId=x", false,
-			fakeWebAuthn{finishErr: fmt.Errorf("%w: bad signature", ErrInvalidRequest)},
-			fakeSessions{}, 401, CodeUnauthenticated, false},
-		{"login finish upstream failure", "/api/auth/login/finish?challengeId=x", false,
-			fakeWebAuthn{finishErr: fmt.Errorf("db down")}, fakeSessions{}, 500, CodeInternalError, false},
-		{"login finish ok issues session", "/api/auth/login/finish?challengeId=x", false,
-			fakeWebAuthn{userID: "u1"}, fakeSessions{}, 200, `"userId":"u1"`, true},
-		{"login finish session issue failure", "/api/auth/login/finish?challengeId=x", false,
-			fakeWebAuthn{userID: "u1"}, fakeSessions{issueErr: fmt.Errorf("db down")}, 500, CodeInternalError, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mux := newAuthMux(&tt.wa, &tt.ss)
-			req := httptest.NewRequest("POST", tt.path, strings.NewReader("{}"))
-			req.Header.Set("Content-Type", "application/json")
-			if tt.authed {
-				req = authedCtx(req)
-			}
-			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, req)
-
-			if rec.Code != tt.wantStatus {
-				t.Errorf("status = %d; want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
-			}
-			if !strings.Contains(rec.Body.String(), tt.wantBody) {
-				t.Errorf("body %q lacks %q", rec.Body, tt.wantBody)
-			}
-			gotCookie := false
-			for _, c := range rec.Result().Cookies() {
-				if c.Name == "rmapp_session" && c.Value != "" {
-					gotCookie = true
-				}
-			}
-			if gotCookie != tt.wantCookie {
-				t.Errorf("session cookie set = %v; want %v", gotCookie, tt.wantCookie)
-			}
-			if tt.wantStatus == 200 {
-				var v map[string]any
-				if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
-					t.Errorf("200 body is not JSON: %v", err)
-				}
-			}
-		})
-	}
+func (f *fakeUsers) GetUserByID(_ context.Context, id string) (*store.User, error) {
+	return f.users[id], f.err
 }
 
-type fakeLimiter struct {
-	allow            bool
-	fails, successes int
+type fakeGrants struct {
+	tokens map[string]*store.OAuthTokens
+	err    error
 }
 
-func (f *fakeLimiter) Allow(string) bool { return f.allow }
-func (f *fakeLimiter) Fail(string)       { f.fails++ }
-func (f *fakeLimiter) Succeed(string)    { f.successes++ }
+func (f *fakeGrants) GetOAuthTokens(_ context.Context, userID string) (*store.OAuthTokens, error) {
+	return f.tokens[userID], f.err
+}
 
-func TestLoginFinishRateLimit(t *testing.T) {
-	t.Run("locked is 429", func(t *testing.T) {
-		lim := &fakeLimiter{allow: false}
-		mux := http.NewServeMux()
-		(&AuthHandler{WebAuthn: &fakeWebAuthn{userID: "u1"}, Sessions: &fakeSessions{},
-			Limiter: lim, CookieName: "rmapp_session"}).RegisterRoutes(mux)
+type fakeCleanup struct{ after []string }
+
+func (f *fakeCleanup) AfterLogout(_ context.Context, userID string) {
+	f.after = append(f.after, userID)
+}
+
+type authEnv struct {
+	mux      *http.ServeMux
+	sessions *oauthSessions
+	cleanup  *fakeCleanup
+}
+
+func newAuthEnv(users UserGetter, grants GrantInfoGetter) *authEnv {
+	e := &authEnv{sessions: &oauthSessions{}, cleanup: &fakeCleanup{}}
+	e.mux = http.NewServeMux()
+	(&AuthHandler{
+		Sessions: e.sessions, Users: users, Grants: grants, Cleanup: e.cleanup,
+		CookieName: "rmapp_session", LoginPath: "/app/api/auth/login",
+	}).RegisterRoutes(e.mux)
+	return e
+}
+
+var aliceUsers = &fakeUsers{users: map[string]*store.User{
+	"u1": {ID: "u1", RedmineUserID: 5, RedmineLogin: "alice", DisplayName: "Alice"},
+}}
+
+func TestMe(t *testing.T) {
+	refreshed := time.Date(2026, 10, 9, 3, 4, 5, 0, time.UTC)
+	grants := &fakeGrants{tokens: map[string]*store.OAuthTokens{
+		"u1": {UserID: "u1", Status: "active", Scopes: "view_project view_issues", RefreshedAt: refreshed},
+	}}
+
+	t.Run("unauthenticated", func(t *testing.T) {
+		e := newAuthEnv(aliceUsers, grants)
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/auth/login/finish?challengeId=x", strings.NewReader("{}")))
-		if rec.Code != 429 || !strings.Contains(rec.Body.String(), CodeRateLimited) {
-			t.Errorf("status = %d body = %s; want 429 rate_limited", rec.Code, rec.Body)
+		e.mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/auth/me", nil))
+		if rec.Code != 401 || !strings.Contains(rec.Body.String(), CodeUnauthenticated) {
+			t.Errorf("status = %d, body = %s; want 401 unauthenticated", rec.Code, rec.Body)
 		}
 	})
 
-	t.Run("failure counts, success resets", func(t *testing.T) {
-		lim := &fakeLimiter{allow: true}
-		mux := http.NewServeMux()
-		(&AuthHandler{
-			WebAuthn: &fakeWebAuthn{finishErr: fmt.Errorf("%w: bad signature", ErrInvalidRequest)},
-			Sessions: &fakeSessions{}, Limiter: lim, CookieName: "rmapp_session"}).RegisterRoutes(mux)
+	t.Run("authenticated with grant details", func(t *testing.T) {
+		e := newAuthEnv(aliceUsers, grants)
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/auth/login/finish?challengeId=x", strings.NewReader("{}")))
-		if lim.fails != 1 {
-			t.Errorf("fails = %d; want 1", lim.fails)
+		e.mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/auth/me", nil)))
+		if rec.Code != 200 {
+			t.Fatalf("status = %d (%s)", rec.Code, rec.Body)
 		}
-
-		mux = http.NewServeMux()
-		(&AuthHandler{WebAuthn: &fakeWebAuthn{userID: "u1"}, Sessions: &fakeSessions{},
-			Limiter: lim, CookieName: "rmapp_session"}).RegisterRoutes(mux)
-		rec = httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/auth/login/finish?challengeId=x", strings.NewReader("{}")))
-		if lim.successes != 1 {
-			t.Errorf("successes = %d; want 1", lim.successes)
+		var got struct {
+			UserID, RedmineLogin, DisplayName, RedmineStatus string
+			RedmineScopes                                    []string
+			RedmineRefreshedAt                               string
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.UserID != "u1" || got.RedmineLogin != "alice" || got.DisplayName != "Alice" || got.RedmineStatus != "active" ||
+			strings.Join(got.RedmineScopes, " ") != "view_project view_issues" || got.RedmineRefreshedAt != "2026-10-09T03:04:05Z" {
+			t.Errorf("me = %+v", got)
 		}
 	})
-}
 
-type fakeBootstrap struct{ err error }
-
-func (f *fakeBootstrap) Run(context.Context, string, string) ([]byte, string, error) {
-	return []byte(`{"publicKey":{}}`), "ch-b", f.err
-}
-
-func TestBootstrapEndpoint(t *testing.T) {
-	newMux := func(b BootstrapService, lim Limiter) *http.ServeMux {
-		mux := http.NewServeMux()
-		(&AuthHandler{WebAuthn: &fakeWebAuthn{}, Sessions: &fakeSessions{},
-			Bootstrap: b, Limiter: lim, CookieName: "rmapp_session"}).RegisterRoutes(mux)
-		return mux
-	}
-	post := func(mux *http.ServeMux, body string) *httptest.ResponseRecorder {
+	t.Run("the response never carries token material", func(t *testing.T) {
+		g := &fakeGrants{tokens: map[string]*store.OAuthTokens{"u1": {
+			UserID: "u1", Status: "active", AccessCiphertext: []byte("CIPHERTEXT-A"), RefreshCiphertext: []byte("CIPHERTEXT-R"),
+			AccessNonce: []byte("NONCE"), RefreshedAt: refreshed,
+		}}}
+		e := newAuthEnv(aliceUsers, g)
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/api/auth/bootstrap", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		mux.ServeHTTP(rec, req)
-		return rec
-	}
-	valid := `{"login":"alice","password":"secret"}`
-
-	tests := []struct {
-		name       string
-		service    BootstrapService
-		limiter    *fakeLimiter
-		body       string
-		wantStatus int
-		wantBody   string
-	}{
-		{"disabled is 404", nil, nil, valid, 404, CodeNotFound},
-		{"malformed body", &fakeBootstrap{}, nil, "{", 400, CodeInvalidRequest},
-		{"missing password", &fakeBootstrap{}, nil, `{"login":"alice"}`, 400, CodeInvalidRequest},
-		{"bad credentials", &fakeBootstrap{err: fmt.Errorf("%w: no", ErrUnauthenticated)},
-			&fakeLimiter{allow: true}, valid, 401, CodeUnauthenticated},
-		{"upstream down", &fakeBootstrap{err: fmt.Errorf("%w: 503", ErrUpstream)},
-			&fakeLimiter{allow: true}, valid, 502, CodeUpstreamError},
-		{"rate limited", &fakeBootstrap{}, &fakeLimiter{allow: false}, valid, 429, CodeRateLimited},
-		{"success", &fakeBootstrap{}, &fakeLimiter{allow: true}, valid, 200, `"challengeId":"ch-b"`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rec := post(newMux(tt.service, limOrNil(tt.limiter)), tt.body)
-			if rec.Code != tt.wantStatus || !strings.Contains(rec.Body.String(), tt.wantBody) {
-				t.Errorf("status = %d body = %s; want %d containing %q", rec.Code, rec.Body, tt.wantStatus, tt.wantBody)
+		e.mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/auth/me", nil)))
+		for _, bad := range []string{"CIPHERTEXT", "NONCE", "ciphertext", "access", "refresh_token"} {
+			if strings.Contains(rec.Body.String(), bad) {
+				t.Errorf("response contains %q: %s", bad, rec.Body)
 			}
-			if tt.name == "bad credentials" && tt.limiter.fails != 1 {
-				t.Errorf("limiter fails = %d; want 1", tt.limiter.fails)
-			}
-			if tt.name == "success" && tt.limiter.successes != 1 {
-				t.Errorf("limiter successes = %d; want 1", tt.limiter.successes)
-			}
-		})
-	}
-}
+		}
+	})
 
-func limOrNil(l *fakeLimiter) Limiter {
-	if l == nil {
-		return nil
-	}
-	return l
-}
-
-type fakeEnrollment struct{ redeemErr error }
-
-func (f *fakeEnrollment) IssueCode(context.Context, string) (string, time.Time, error) {
-	return "123456", time.Now().Add(10 * time.Minute), nil
-}
-func (f *fakeEnrollment) Redeem(context.Context, string) ([]byte, string, error) {
-	return []byte(`{"publicKey":{}}`), "ch-e", f.redeemErr
-}
-
-func TestEnrollmentEndpoints(t *testing.T) {
-	newMux := func(e EnrollmentService, lim Limiter) *http.ServeMux {
-		mux := http.NewServeMux()
-		(&AuthHandler{WebAuthn: &fakeWebAuthn{}, Sessions: &fakeSessions{},
-			Enrollment: e, Limiter: lim, CookieName: "rmapp_session"}).RegisterRoutes(mux)
-		return mux
-	}
-
-	t.Run("issue requires session", func(t *testing.T) {
+	t.Run("session for a deleted user is unauthenticated", func(t *testing.T) {
+		e := newAuthEnv(&fakeUsers{users: map[string]*store.User{}}, grants)
 		rec := httptest.NewRecorder()
-		newMux(&fakeEnrollment{}, nil).ServeHTTP(rec,
-			httptest.NewRequest("POST", "/api/auth/enrollment-code", nil))
+		e.mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/auth/me", nil)))
 		if rec.Code != 401 {
 			t.Errorf("status = %d; want 401", rec.Code)
 		}
 	})
 
-	t.Run("issue ok", func(t *testing.T) {
+	t.Run("user lookup failure is a 500", func(t *testing.T) {
+		e := newAuthEnv(&fakeUsers{err: fmt.Errorf("db down")}, grants)
 		rec := httptest.NewRecorder()
-		newMux(&fakeEnrollment{}, nil).ServeHTTP(rec,
-			authedCtx(httptest.NewRequest("POST", "/api/auth/enrollment-code", nil)))
-		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"code":"123456"`) {
-			t.Errorf("status = %d body = %s", rec.Code, rec.Body)
+		e.mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/auth/me", nil)))
+		if rec.Code != 500 {
+			t.Errorf("status = %d; want 500", rec.Code)
 		}
 	})
 
-	t.Run("enroll missing code", func(t *testing.T) {
+	t.Run("redmineStatus", func(t *testing.T) {
+		for _, tt := range []struct {
+			name   string
+			grants GrantInfoGetter
+			want   string
+		}{
+			{"no Grants wired", nil, "unlinked"},
+			{"no token row", &fakeGrants{tokens: map[string]*store.OAuthTokens{}}, "unlinked"},
+			{"active", grants, "active"},
+			{"invalid", &fakeGrants{tokens: map[string]*store.OAuthTokens{"u1": {Status: "invalid"}}}, "invalid"},
+			{"lookup failure degrades to unlinked", &fakeGrants{err: fmt.Errorf("db down")}, "unlinked"},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				e := newAuthEnv(aliceUsers, tt.grants)
+				rec := httptest.NewRecorder()
+				e.mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/auth/me", nil)))
+				want := fmt.Sprintf(`"redmineStatus":%q`, tt.want)
+				if rec.Code != 200 || !strings.Contains(rec.Body.String(), want) {
+					t.Errorf("status=%d body=%s; want 200 containing %s", rec.Code, rec.Body, want)
+				}
+			})
+		}
+	})
+}
+
+func TestLogout(t *testing.T) {
+	e := newAuthEnv(aliceUsers, nil)
+	req := authedCtx(httptest.NewRequest("POST", "/api/auth/logout", nil))
+	req.AddCookie(&http.Cookie{Name: "rmapp_session", Value: "tok-9"})
+	rec := httptest.NewRecorder()
+	e.mux.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if len(e.sessions.revoked) != 1 || e.sessions.revoked[0] != "tok-9" {
+		t.Errorf("revoked = %v; want [tok-9]", e.sessions.revoked)
+	}
+	cleared := false
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "rmapp_session" && c.MaxAge == -1 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Error("session cookie not cleared")
+	}
+	// このセッションの失効後に、Redmine 側トークンの後始末（最後の端末なら失効）を依頼する。
+	if len(e.cleanup.after) != 1 || e.cleanup.after[0] != "u1" {
+		t.Errorf("cleanup calls = %v; want [u1]", e.cleanup.after)
+	}
+
+	// Cookie もセッションも無くても冪等に 200（後始末は呼ばない）。
+	e2 := newAuthEnv(aliceUsers, nil)
+	rec = httptest.NewRecorder()
+	e2.mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/auth/logout", nil))
+	if rec.Code != 200 || len(e2.cleanup.after) != 0 {
+		t.Errorf("anonymous logout: status = %d, cleanup = %v; want 200 and none", rec.Code, e2.cleanup.after)
+	}
+}
+
+func TestReauthorize(t *testing.T) {
+	t.Run("returns the login URL under the configured path", func(t *testing.T) {
+		e := newAuthEnv(aliceUsers, nil)
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/api/auth/enroll", strings.NewReader("{}"))
-		newMux(&fakeEnrollment{}, nil).ServeHTTP(rec, req)
+		e.mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("POST", "/api/auth/reauthorize", strings.NewReader(`{"return":"#issues/3"}`))))
+		if rec.Code != 200 {
+			t.Fatalf("status = %d (%s)", rec.Code, rec.Body)
+		}
+		var got struct{ LoginURL string }
+		_ = json.Unmarshal(rec.Body.Bytes(), &got)
+		if got.LoginURL != "/app/api/auth/login?return=%23issues%2F3" {
+			t.Errorf("loginUrl = %q", got.LoginURL)
+		}
+	})
+	t.Run("defaults to the settings screen", func(t *testing.T) {
+		e := newAuthEnv(aliceUsers, nil)
+		rec := httptest.NewRecorder()
+		e.mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("POST", "/api/auth/reauthorize", nil)))
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), "return=%23settings") {
+			t.Errorf("status = %d body = %s", rec.Code, rec.Body)
+		}
+	})
+	t.Run("requires a session", func(t *testing.T) {
+		e := newAuthEnv(aliceUsers, nil)
+		rec := httptest.NewRecorder()
+		e.mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/auth/reauthorize", nil))
+		if rec.Code != 401 {
+			t.Errorf("status = %d; want 401", rec.Code)
+		}
+	})
+	t.Run("a malformed body is a 400", func(t *testing.T) {
+		e := newAuthEnv(aliceUsers, nil)
+		rec := httptest.NewRecorder()
+		e.mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("POST", "/api/auth/reauthorize", strings.NewReader(`{not json`))))
 		if rec.Code != 400 {
 			t.Errorf("status = %d; want 400", rec.Code)
 		}
 	})
-
-	t.Run("enroll invalid code counts failure", func(t *testing.T) {
-		lim := &fakeLimiter{allow: true}
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/api/auth/enroll", strings.NewReader(`{"code":"999999"}`))
-		newMux(&fakeEnrollment{redeemErr: fmt.Errorf("%w: bad code", ErrInvalidRequest)}, lim).ServeHTTP(rec, req)
-		if rec.Code != 400 || lim.fails != 1 {
-			t.Errorf("status = %d fails = %d; want 400 and 1", rec.Code, lim.fails)
-		}
-	})
-
-	t.Run("enroll rate limited", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/api/auth/enroll", strings.NewReader(`{"code":"123456"}`))
-		newMux(&fakeEnrollment{}, &fakeLimiter{allow: false}).ServeHTTP(rec, req)
-		if rec.Code != 429 {
-			t.Errorf("status = %d; want 429", rec.Code)
-		}
-	})
-
-	t.Run("enroll ok", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/api/auth/enroll", strings.NewReader(`{"code":"123456"}`))
-		newMux(&fakeEnrollment{}, nil).ServeHTTP(rec, req)
-		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"challengeId":"ch-e"`) {
-			t.Errorf("status = %d body = %s", rec.Code, rec.Body)
-		}
-	})
 }
 
-type fakeRelink struct{ err error }
-
-func (f *fakeRelink) Relink(context.Context, string, string, string) error { return f.err }
-
-func TestRelinkEndpoint(t *testing.T) {
-	newMux := func(svc RelinkService, lim Limiter) *http.ServeMux {
-		mux := http.NewServeMux()
-		(&AuthHandler{WebAuthn: &fakeWebAuthn{}, Sessions: &fakeSessions{},
-			Relink: svc, Limiter: lim, CookieName: "rmapp_session"}).RegisterRoutes(mux)
-		return mux
-	}
-	post := func(mux *http.ServeMux, authed bool, body string) *httptest.ResponseRecorder {
+func TestLegacyAuthRoutesAreGone(t *testing.T) {
+	// パスキー・登録コード・パスワードブートストラップは廃止（Design.md §3）。
+	e := newAuthEnv(aliceUsers, nil)
+	for _, p := range []string{
+		"/api/auth/register/begin", "/api/auth/register/finish", "/api/auth/login/begin", "/api/auth/login/finish",
+		"/api/auth/bootstrap", "/api/auth/enrollment-code", "/api/auth/enroll", "/api/auth/relink", "/api/devices",
+	} {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/api/auth/relink", strings.NewReader(body))
-		if authed {
-			req = authedCtx(req)
+		e.mux.ServeHTTP(rec, httptest.NewRequest("POST", p, nil))
+		if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s is still routed (status %d)", p, rec.Code)
 		}
-		mux.ServeHTTP(rec, req)
-		return rec
-	}
-	valid := `{"login":"alice","password":"secret"}`
-
-	tests := []struct {
-		name       string
-		service    RelinkService
-		limiter    *fakeLimiter
-		authed     bool
-		body       string
-		wantStatus int
-		wantBody   string
-	}{
-		{"disabled is 404", nil, nil, true, valid, 404, CodeNotFound},
-		{"unauthenticated", &fakeRelink{}, nil, false, valid, 401, CodeUnauthenticated},
-		{"malformed body", &fakeRelink{}, nil, true, "{", 400, CodeInvalidRequest},
-		{"missing password", &fakeRelink{}, nil, true, `{"login":"alice"}`, 400, CodeInvalidRequest},
-		{"bad credentials", &fakeRelink{err: fmt.Errorf("%w: no", ErrUnauthenticated)},
-			&fakeLimiter{allow: true}, true, valid, 401, CodeUnauthenticated},
-		{"upstream down", &fakeRelink{err: fmt.Errorf("%w: 503", ErrUpstream)},
-			&fakeLimiter{allow: true}, true, valid, 502, CodeUpstreamError},
-		{"rate limited", &fakeRelink{}, &fakeLimiter{allow: false}, true, valid, 429, CodeRateLimited},
-		{"success", &fakeRelink{}, &fakeLimiter{allow: true}, true, valid, 200, `"relinked":true`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rec := post(newMux(tt.service, limOrNil(tt.limiter)), tt.authed, tt.body)
-			if rec.Code != tt.wantStatus || !strings.Contains(rec.Body.String(), tt.wantBody) {
-				t.Errorf("status = %d body = %s; want %d containing %q", rec.Code, rec.Body, tt.wantStatus, tt.wantBody)
-			}
-			if tt.name == "bad credentials" && tt.limiter.fails != 1 {
-				t.Errorf("limiter fails = %d; want 1", tt.limiter.fails)
-			}
-			if tt.name == "success" && tt.limiter.successes != 1 {
-				t.Errorf("limiter successes = %d; want 1", tt.limiter.successes)
-			}
-		})
-	}
-}
-
-func TestLimiterKeyUsesForwardedFor(t *testing.T) {
-	tests := []struct {
-		name string
-		xff  string
-		addr string
-		want string
-	}{
-		{"no xff falls back to remote", "", "10.0.0.9:1234", "10.0.0.9"},
-		{"single proxy hop uses rightmost", "203.0.113.5", "127.0.0.1:8090", "203.0.113.5"},
-		{"spoofed left ignored, rightmost trusted", "1.1.1.1, 203.0.113.5", "127.0.0.1:8090", "203.0.113.5"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := httptest.NewRequest("POST", "/x", nil)
-			r.RemoteAddr = tt.addr
-			if tt.xff != "" {
-				r.Header.Set("X-Forwarded-For", tt.xff)
-			}
-			if got := limiterKey(r); got != tt.want {
-				t.Errorf("limiterKey = %q; want %q", got, tt.want)
-			}
-		})
 	}
 }

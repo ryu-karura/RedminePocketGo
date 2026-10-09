@@ -9,40 +9,40 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ryu-karura/RedminePocketGo/server/internal/credential"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/redmine"
 )
 
-// ErrNoRedmineKey は利用者に有効な Redmine API キーが無い。
-var ErrNoRedmineKey = errors.New("httpapi: redmine api key not available")
-
-// Aggregator は Redmine クライアントが満たす（集約 API 用）。
+// Aggregator は Redmine への取得口（集約 API 用）。実装は credential.Authed で、
+// 第 2 引数（string）は利用者 ID。トークンの取得・期限前の更新・上流 401 時の
+// 更新と 1 回の再試行は実装側が担い、ハンドラはトークンを一切扱わない。
 type Aggregator interface {
-	ListProjects(ctx context.Context, apiKey string) ([]redmine.Project, error)
-	ListProjectIssues(ctx context.Context, apiKey string, projectID int) ([]redmine.Issue, error)
-	GetIssue(ctx context.Context, apiKey string, id int) (*redmine.Issue, error)
-	CountOpenIssues(ctx context.Context, apiKey string, projectID int) (int, error)
-	ListTrackers(ctx context.Context, apiKey string) ([]redmine.Ref, error)
-	ListStatuses(ctx context.Context, apiKey string) ([]redmine.Status, error)
-	ListPriorities(ctx context.Context, apiKey string) ([]redmine.Ref, error)
-	ListCustomFieldDefs(ctx context.Context, apiKey string) ([]redmine.CustomFieldDef, error)
-	ListProjectVersions(ctx context.Context, apiKey string, projectID int) ([]redmine.Version, error)
-	ListProjectMemberships(ctx context.Context, apiKey string, projectID int) ([]redmine.Membership, error)
-	GetAttachment(ctx context.Context, apiKey string, id int) (*redmine.Attachment, error)
+	ListProjects(ctx context.Context, userID string) ([]redmine.Project, error)
+	ListProjectIssues(ctx context.Context, userID string, projectID int) ([]redmine.Issue, error)
+	GetIssue(ctx context.Context, userID string, id int) (*redmine.Issue, error)
+	CountOpenIssues(ctx context.Context, userID string, projectID int) (int, error)
+	ListTrackers(ctx context.Context, userID string) ([]redmine.Ref, error)
+	ListStatuses(ctx context.Context, userID string) ([]redmine.Status, error)
+	ListPriorities(ctx context.Context, userID string) ([]redmine.Ref, error)
+	ListCustomFieldDefs(ctx context.Context, userID string) ([]redmine.CustomFieldDef, error)
+	ListProjectVersions(ctx context.Context, userID string, projectID int) ([]redmine.Version, error)
+	ListProjectMemberships(ctx context.Context, userID string, projectID int) ([]redmine.Membership, error)
+	GetAttachment(ctx context.Context, userID string, id int) (*redmine.Attachment, error)
 }
 
-// KeyProvider は利用者の復号済み API キーを返し、上流 401 時に無効化する。
-// credential.Vault を包むアダプタが実装する（キーの生存期間をハンドラ内に
-// 閉じ込める）。未連携・無効なキーは ErrNoRedmineKey を返し、それ以外の
-// エラー（DB 障害・復号失敗など）は素通しして 500 に写像させる。
-type KeyProvider interface {
-	APIKeyValue(ctx context.Context, userID string) (string, error)
+// CredentialGate は利用者の OAuth 連携が使える状態かを確かめ、使えなくなった
+// ときに無効化する（credential.Manager が実装）。未連携・無効は
+// credential.ErrNoCredential / ErrCredentialInvalid を返し、それ以外のエラー
+// （DB 障害・復号失敗など）は素通しして 500 に写像させる。
+type CredentialGate interface {
+	Ensure(ctx context.Context, userID string) error
 	MarkInvalid(ctx context.Context, userID string) error
 }
 
 // AggregateHandler は画面向けの集約エンドポイント（Design.md §6.4）を提供する。
 type AggregateHandler struct {
 	Redmine Aggregator
-	Keys    KeyProvider
+	Gate    CredentialGate
 	Cache   *AggCache
 	Logger  *slog.Logger // 任意。500 経路の原因を記録する
 }
@@ -54,37 +54,36 @@ func (h *AggregateHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/meta", h.meta)
 }
 
-// resolve は認証・キー取得の共通前処理。
-func (h *AggregateHandler) resolve(w http.ResponseWriter, r *http.Request) (userID, apiKey string, ok bool) {
+// resolve は認証と連携状態の共通前処理。キャッシュ命中で上流を呼ばない場合でも、
+// 未連携・無効（再認可が必要）を確実に検出するため、毎回ここで確かめる。
+func (h *AggregateHandler) resolve(w http.ResponseWriter, r *http.Request) (userID string, ok bool) {
 	sess := SessionFrom(r.Context())
 	if sess == nil {
 		WriteError(w, CodeUnauthenticated, "login required")
-		return "", "", false
+		return "", false
 	}
-	apiKey, err := h.Keys.APIKeyValue(r.Context(), sess.UserID)
-	if err != nil {
-		if errors.Is(err, ErrNoRedmineKey) {
-			// 未連携・無効化済み → 再紐付けを促す
-			WriteError(w, CodeRedmineCredentialInvalid, "redmine account not linked")
-			return "", "", false
-		}
-		// DB 障害・復号失敗などの一時的なサーバー側エラーは 500（再紐付けを促さない）
-		h.logErr("api key load failed", sess.UserID, err)
-		WriteError(w, CodeInternalError, "credential load failed")
-		return "", "", false
+	if err := h.Gate.Ensure(r.Context(), sess.UserID); err != nil {
+		h.writeUpstream(w, r, sess.UserID, err)
+		return "", false
 	}
-	return sess.UserID, apiKey, true
+	return sess.UserID, true
 }
 
-// writeUpstream は Redmine 由来のエラーを適切なコードへ写像する。上流 401 は
-// proxy と同様に保存済みキーを無効化してから 409 を返す（両経路の挙動を揃える）。
+// writeUpstream は Redmine／OAuth 連携由来のエラーを適切なコードへ写像する。
+// 更新後も上流 401 の場合は proxy と同様に組を無効化してから 409 を返す
+// （両経路の挙動を揃える）。
 func (h *AggregateHandler) writeUpstream(w http.ResponseWriter, r *http.Request, userID string, err error) {
 	switch {
+	case errors.Is(err, credential.ErrNoCredential):
+		WriteError(w, CodeRedmineCredentialInvalid, "redmine account not linked")
+	case errors.Is(err, credential.ErrCredentialInvalid):
+		WriteError(w, CodeRedmineCredentialInvalid, "redmine credential is invalid; re-authorization required")
 	case errors.Is(err, redmine.ErrUnauthorized):
-		if merr := h.Keys.MarkInvalid(r.Context(), userID); merr != nil {
+		// 更新したトークンまで拒否された。組を無効にして再認可を求める。
+		if merr := h.Gate.MarkInvalid(r.Context(), userID); merr != nil {
 			h.logErr("mark credential invalid failed", userID, merr)
 		}
-		WriteError(w, CodeRedmineCredentialInvalid, "redmine credential is invalid; re-link required")
+		WriteError(w, CodeRedmineCredentialInvalid, "redmine rejected the refreshed token; re-authorization required")
 	case errors.Is(err, redmine.ErrUpstream):
 		WriteError(w, CodeUpstreamError, "redmine is unavailable")
 	default:
@@ -100,18 +99,18 @@ func (h *AggregateHandler) logErr(msg, userID string, err error) {
 }
 
 func (h *AggregateHandler) projectsTree(w http.ResponseWriter, r *http.Request) {
-	userID, apiKey, ok := h.resolve(w, r)
+	userID, ok := h.resolve(w, r)
 	if !ok {
 		return
 	}
 	// プロジェクトツリーはユーザー単位で 60 秒キャッシュ（Design.md §6.6）
 	v, err := h.Cache.projectTree.get(userID, func() (any, error) {
-		projects, err := h.Redmine.ListProjects(r.Context(), apiKey)
+		projects, err := h.Redmine.ListProjects(r.Context(), userID)
 		if err != nil {
 			return nil, err
 		}
 		tree := redmine.BuildProjectTree(projects)
-		if err := h.enrichOpenCounts(r.Context(), userID, apiKey, tree); err != nil {
+		if err := h.enrichOpenCounts(r.Context(), userID, tree); err != nil {
 			return nil, err
 		}
 		return tree, nil
@@ -128,7 +127,7 @@ func (h *AggregateHandler) projectsTree(w http.ResponseWriter, r *http.Request) 
 // 一時障害などその他のエラーは当該ノードの件数を欠測（nil）にしてツリー描画は
 // 続行する。取得はキー単位で並行化するが、実際の上流並行数は Redmine
 // クライアント側のセマフォで抑えられる。
-func (h *AggregateHandler) enrichOpenCounts(ctx context.Context, userID, apiKey string, tree []*redmine.ProjectNode) error {
+func (h *AggregateHandler) enrichOpenCounts(ctx context.Context, userID string, tree []*redmine.ProjectNode) error {
 	nodes := flattenProjectNodes(tree)
 	if len(nodes) == 0 {
 		return nil
@@ -145,7 +144,7 @@ func (h *AggregateHandler) enrichOpenCounts(ctx context.Context, userID, apiKey 
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			n, err := h.Redmine.CountOpenIssues(ctx, apiKey, nd.ID)
+			n, err := h.Redmine.CountOpenIssues(ctx, userID, nd.ID)
 			if err != nil {
 				switch {
 				case errors.Is(err, redmine.ErrUnauthorized):
@@ -190,7 +189,7 @@ func flattenProjectNodes(tree []*redmine.ProjectNode) []*redmine.ProjectNode {
 }
 
 func (h *AggregateHandler) issuesTree(w http.ResponseWriter, r *http.Request) {
-	userID, apiKey, ok := h.resolve(w, r)
+	userID, ok := h.resolve(w, r)
 	if !ok {
 		return
 	}
@@ -199,7 +198,7 @@ func (h *AggregateHandler) issuesTree(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, CodeInvalidRequest, "invalid project id")
 		return
 	}
-	issues, err := h.Redmine.ListProjectIssues(r.Context(), apiKey, projectID)
+	issues, err := h.Redmine.ListProjectIssues(r.Context(), userID, projectID)
 	if err != nil {
 		h.writeUpstream(w, r, userID, err)
 		return
@@ -217,7 +216,7 @@ type issueDetailResponse struct {
 }
 
 func (h *AggregateHandler) issueDetail(w http.ResponseWriter, r *http.Request) {
-	userID, apiKey, ok := h.resolve(w, r)
+	userID, ok := h.resolve(w, r)
 	if !ok {
 		return
 	}
@@ -226,19 +225,19 @@ func (h *AggregateHandler) issueDetail(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, CodeInvalidRequest, "invalid issue id")
 		return
 	}
-	issue, err := h.Redmine.GetIssue(r.Context(), apiKey, id)
+	issue, err := h.Redmine.GetIssue(r.Context(), userID, id)
 	if err != nil {
 		h.writeUpstream(w, r, userID, err)
 		return
 	}
 
-	defs, err := h.customFieldDefs(r.Context(), userID, apiKey)
+	defs, err := h.customFieldDefs(r.Context(), userID)
 	if err != nil {
 		h.writeUpstream(w, r, userID, err)
 		return
 	}
 	merged := redmine.MergeCustomFields(issue.CustomFields, defs)
-	if err := h.resolveCustomFieldRefs(r.Context(), userID, apiKey, issue.Project.ID, merged); err != nil {
+	if err := h.resolveCustomFieldRefs(r.Context(), userID, issue.Project.ID, merged); err != nil {
 		h.writeUpstream(w, r, userID, err)
 		return
 	}
@@ -253,7 +252,7 @@ func (h *AggregateHandler) issueDetail(w http.ResponseWriter, r *http.Request) {
 // それ以外の障害は当該フィールドを生値表示のまま残して続行する
 // （チケット詳細のキャッシュはない——Design.md §6.6——ので、
 // enrichOpenCounts のような「中断はキャッシュしない」配慮は不要）。
-func (h *AggregateHandler) resolveCustomFieldRefs(ctx context.Context, userID, apiKey string, projectID int, fields []redmine.ResolvedCustomField) error {
+func (h *AggregateHandler) resolveCustomFieldRefs(ctx context.Context, userID string, projectID int, fields []redmine.ResolvedCustomField) error {
 	var needVersions, needUsers, needAttachments bool
 	for _, f := range fields {
 		switch f.FieldFormat {
@@ -268,7 +267,7 @@ func (h *AggregateHandler) resolveCustomFieldRefs(ctx context.Context, userID, a
 
 	versionNames := map[string]string{}
 	if needVersions {
-		versions, err := h.Redmine.ListProjectVersions(ctx, apiKey, projectID)
+		versions, err := h.Redmine.ListProjectVersions(ctx, userID, projectID)
 		if err != nil {
 			if errors.Is(err, redmine.ErrUnauthorized) {
 				return err
@@ -282,7 +281,7 @@ func (h *AggregateHandler) resolveCustomFieldRefs(ctx context.Context, userID, a
 
 	userNames := map[string]string{}
 	if needUsers {
-		members, err := h.Redmine.ListProjectMemberships(ctx, apiKey, projectID)
+		members, err := h.Redmine.ListProjectMemberships(ctx, userID, projectID)
 		if err != nil {
 			if errors.Is(err, redmine.ErrUnauthorized) {
 				return err
@@ -310,7 +309,7 @@ func (h *AggregateHandler) resolveCustomFieldRefs(ctx context.Context, userID, a
 				if convErr != nil {
 					continue
 				}
-				att, err := h.Redmine.GetAttachment(ctx, apiKey, attID)
+				att, err := h.Redmine.GetAttachment(ctx, userID, attID)
 				if err != nil {
 					if errors.Is(err, redmine.ErrUnauthorized) {
 						return err
@@ -343,9 +342,9 @@ func (h *AggregateHandler) resolveCustomFieldRefs(ctx context.Context, userID, a
 // 上流 401（API キー自体が無効）は他の経路と同様に呼び出し元へ伝播し、
 // 再紐付けを促す——ここだけ黙って degrade すると、キーが無効なのに
 // チケット詳細やメタ情報だけは中途半端に表示され続けてしまう。
-func (h *AggregateHandler) customFieldDefs(ctx context.Context, userID, apiKey string) ([]redmine.CustomFieldDef, error) {
+func (h *AggregateHandler) customFieldDefs(ctx context.Context, userID string) ([]redmine.CustomFieldDef, error) {
 	v, err := h.Cache.customFieldDefs.get(userID, func() (any, error) {
-		defs, err := h.Redmine.ListCustomFieldDefs(ctx, apiKey)
+		defs, err := h.Redmine.ListCustomFieldDefs(ctx, userID)
 		if err != nil {
 			if errors.Is(err, redmine.ErrUnauthorized) {
 				return nil, err // 呼び出し元へ伝播。キャッシュしない
@@ -365,21 +364,21 @@ func (h *AggregateHandler) customFieldDefs(ctx context.Context, userID, apiKey s
 }
 
 func (h *AggregateHandler) meta(w http.ResponseWriter, r *http.Request) {
-	userID, apiKey, ok := h.resolve(w, r)
+	userID, ok := h.resolve(w, r)
 	if !ok {
 		return
 	}
 	// メタ（トラッカー・ステータス・優先度）はユーザー単位で 10 分キャッシュ
 	v, err := h.Cache.meta.get(userID, func() (any, error) {
-		trackers, err := h.Redmine.ListTrackers(r.Context(), apiKey)
+		trackers, err := h.Redmine.ListTrackers(r.Context(), userID)
 		if err != nil {
 			return nil, err
 		}
-		statuses, err := h.Redmine.ListStatuses(r.Context(), apiKey)
+		statuses, err := h.Redmine.ListStatuses(r.Context(), userID)
 		if err != nil {
 			return nil, err
 		}
-		priorities, err := h.Redmine.ListPriorities(r.Context(), apiKey)
+		priorities, err := h.Redmine.ListPriorities(r.Context(), userID)
 		if err != nil {
 			return nil, err
 		}
@@ -397,7 +396,7 @@ func (h *AggregateHandler) meta(w http.ResponseWriter, r *http.Request) {
 	// 上の必須メタとは独立に取得しマージする。v はキャッシュヒット時に複数
 	// リクエストへ同一 map 参照が返るため、直接書き込むと並行アクセスで
 	// "concurrent map writes" fatal を起こす——書き込み用に新しい map へコピーする。
-	defs, err := h.customFieldDefs(r.Context(), userID, apiKey)
+	defs, err := h.customFieldDefs(r.Context(), userID)
 	if err != nil {
 		h.writeUpstream(w, r, userID, err)
 		return

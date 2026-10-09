@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"encoding/hex"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -52,27 +51,6 @@ func readKEK(path string) ([]byte, error) {
 		return []byte(trimmed), nil
 	}
 	return nil, fmt.Errorf("crypto.kekFile は 64 桁の 16 進または 32 バイトである必要があります")
-}
-
-// vaultKeyProvider は保管庫を httpapi.KeyProvider に適合させる。復号した
-// 平文キーはこの呼び出しの戻り値としてハンドラ内に閉じ、保存しない。
-type vaultKeyProvider struct{ vault *credential.Vault }
-
-func (v vaultKeyProvider) APIKeyValue(ctx context.Context, userID string) (string, error) {
-	key, err := v.vault.LoadAPIKey(ctx, userID)
-	if err != nil {
-		// 未登録・無効化済みは再紐付けを促すべき状態として集約層へ伝える。
-		// それ以外（DB 障害・復号失敗）は素通しして 500 に写像させる。
-		if errors.Is(err, credential.ErrNoCredential) || errors.Is(err, credential.ErrCredentialInvalid) {
-			return "", httpapi.ErrNoRedmineKey
-		}
-		return "", err
-	}
-	return key.Value(), nil
-}
-
-func (v vaultKeyProvider) MarkInvalid(ctx context.Context, userID string) error {
-	return v.vault.MarkInvalid(ctx, userID)
 }
 
 func main() {
@@ -138,17 +116,6 @@ func run(out io.Writer, args []string) error {
 		CookieName:      cfg.Session.CookieName,
 		SecureCookie:    cfg.Session.SecureCookie,
 	})
-	wa, err := auth.NewWebAuthn(st, auth.WebAuthnConfig{
-		RPID:             cfg.WebAuthn.RPID,
-		RPName:           cfg.WebAuthn.RPName,
-		Origins:          cfg.WebAuthn.Origins,
-		UserVerification: cfg.WebAuthn.UserVerification,
-		ChallengeTTL:     time.Duration(cfg.WebAuthn.ChallengeTTLMinutes) * time.Minute,
-	})
-	if err != nil {
-		return err
-	}
-
 	kek, err := readKEK(cfg.Crypto.KEKFile)
 	if err != nil {
 		return err
@@ -158,45 +125,13 @@ func run(out io.Writer, args []string) error {
 		return err
 	}
 
-	var bootstrapSvc httpapi.BootstrapService
-	var relinkSvc httpapi.RelinkService
-	if cfg.Features.PasswordBootstrap {
-		bs := auth.NewBootstrap(st, wa, vault, auth.BootstrapConfig{
-			BaseURL: cfg.Redmine.BaseURL,
-			SubURI:  cfg.Redmine.SubURI,
-			Timeout: time.Duration(cfg.Redmine.TimeoutSeconds) * time.Second,
-		})
-		bootstrapSvc = bs
-		relinkSvc = bs
-	}
-
 	apiMux := http.NewServeMux()
 	// 未実装の /api パスはエンベロープの 404（個別ルートが優先される）。
 	apiMux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		httpapi.WriteError(w, httpapi.CodeNotFound, "no such endpoint")
 	})
-	(&httpapi.AuthHandler{
-		WebAuthn:    wa,
-		Sessions:    sessions,
-		Users:       st,
-		Credentials: st,
-		Limiter:     auth.NewRateLimiter(5, 60*time.Second),
-		Bootstrap:   bootstrapSvc,
-		Enrollment:  auth.NewEnrollment(st, wa),
-		Relink:      relinkSvc,
-		CookieName:  cfg.Session.CookieName,
-	}).RegisterRoutes(apiMux)
-	(&httpapi.DeviceHandler{Devices: st}).RegisterRoutes(apiMux)
-
-	// Redmine 中継（許可リスト経由。/api/redmine/ 配下）
-	relay := proxy.New(vault, proxy.Config{
-		BaseURL: cfg.Redmine.BaseURL,
-		SubURI:  cfg.Redmine.SubURI,
-		Timeout: time.Duration(cfg.Redmine.TimeoutSeconds) * time.Second,
-	})
-	apiMux.HandleFunc("/api/redmine/", relay.Handler("/api/redmine"))
-
-	// 集約 API（画面向け。ツリー化・詳細・メタ）
+	// Redmine への接続。トークンは Manager が供給・更新し、中継と集約の両方が
+	// 同じ Manager を使う（利用者ごとの更新を 1 本に直列化するため）。
 	rmClient := redmine.NewClient(redmine.Config{
 		BaseURL:        cfg.Redmine.BaseURL,
 		SubURI:         cfg.Redmine.SubURI,
@@ -205,7 +140,6 @@ func run(out io.Writer, args []string) error {
 		MaxConcurrency: cfg.Redmine.MaxConcurrency,
 		PageSize:       cfg.Redmine.PageSize,
 	})
-	// OAuth ログイン（Design.md §3）。フェーズ 10 の切り替えまで旧経路と並存する。
 	rmOAuth := rmClient.OAuth(redmine.OAuthConfig{
 		ClientID:      cfg.Redmine.OAuth.ClientID,
 		ClientSecret:  clientSecret,
@@ -213,10 +147,13 @@ func run(out io.Writer, args []string) error {
 		Scopes:        cfg.Redmine.OAuth.Scopes,
 		PublicBaseURL: cfg.Redmine.PublicBaseURL,
 	})
+	tokens := credential.NewManager(vault, rmOAuth, time.Duration(cfg.Redmine.OAuth.RefreshSkewSeconds)*time.Second)
+
+	// 認証: OAuth ログイン / コールバック（Design.md §3.3）と現在セッションの API。
+	stateTTL := time.Duration(cfg.Redmine.OAuth.StateTTLMinutes) * time.Minute
 	(&httpapi.OAuthHandler{
 		Login: auth.NewOAuthLogin(auth.OAuthLoginDeps{
-			Store: st, Vault: vault, OAuth: rmOAuth, Identity: rmClient, Sessions: sessions,
-			StateTTL: time.Duration(cfg.Redmine.OAuth.StateTTLMinutes) * time.Minute,
+			Store: st, Vault: vault, OAuth: rmOAuth, Identity: rmClient, Sessions: sessions, StateTTL: stateTTL,
 		}),
 		Sessions:          sessions,
 		Limiter:           auth.NewRateLimiter(5, 60*time.Second),
@@ -225,13 +162,32 @@ func run(out io.Writer, args []string) error {
 		StateCookieName:   "rmapp_oauth_state",
 		StateCookiePath:   cfg.BaseURL + "/api/auth/",
 		StateCookieSecure: cfg.Session.SecureCookie,
-		StateCookieTTL:    time.Duration(cfg.Redmine.OAuth.StateTTLMinutes) * time.Minute,
+		StateCookieTTL:    stateTTL,
 		AppURL:            cfg.BaseURL + "/",
 	}).RegisterRoutes(apiMux)
+	(&httpapi.AuthHandler{
+		Sessions: sessions,
+		Users:    st,
+		Grants:   st,
+		Cleanup:  &auth.GrantCleaner{Store: st, Vault: vault, OAuth: rmOAuth, Logger: logger},
+		Logger:   logger,
 
+		CookieName: cfg.Session.CookieName,
+		LoginPath:  cfg.BaseURL + "/api/auth/login",
+	}).RegisterRoutes(apiMux)
+
+	// Redmine 中継（許可リスト経由。/api/redmine/ 配下）
+	relay := proxy.New(tokens, proxy.Config{
+		BaseURL: cfg.Redmine.BaseURL,
+		SubURI:  cfg.Redmine.SubURI,
+		Timeout: time.Duration(cfg.Redmine.TimeoutSeconds) * time.Second,
+	})
+	apiMux.HandleFunc("/api/redmine/", relay.Handler("/api/redmine"))
+
+	// 集約 API（画面向け。ツリー化・詳細・メタ）
 	(&httpapi.AggregateHandler{
-		Redmine: rmClient,
-		Keys:    vaultKeyProvider{vault},
+		Redmine: credential.NewAuthed(rmClient, tokens),
+		Gate:    tokens,
 		Cache:   httpapi.NewAggCache(),
 		Logger:  logger,
 	}).RegisterRoutes(apiMux)

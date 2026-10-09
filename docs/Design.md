@@ -183,7 +183,7 @@ IoTDesignTemplate から引き継ぐ設計:
 |---|---|---|
 | GET | `/api/auth/login` | 認可要求の開始。`state` と PKCE を生成して保存し、Redmine の `/oauth/authorize` へ 302 する。クエリ `return` は画面ハッシュ（`#projects` 等）の許可リストのみ受け付ける |
 | GET | `/api/auth/callback` | Redmine からの戻り。`state` 検証 → コード交換 → 利用者特定 → セッション発行 → SPA へ 302。失敗時は `#login?error=<code>` へ 302 |
-| POST | `/api/auth/logout` | セッションを破棄し、トークンを Redmine 側でも失効（`/oauth/revoke`）させる |
+| POST | `/api/auth/logout` | セッションを破棄する。**他の端末のセッションが残っていなければ**、トークンを Redmine 側でも失効（`/oauth/revoke`。リフレッシュ → アクセスの順）させ、ローカルの組も削除する。トークンは利用者単位で端末間共有のため、残っている間は失効させない |
 | GET | `/api/auth/me` | 現在のセッション情報とトークンの状態を返す（SPA 起動時に呼ぶ） |
 | POST | `/api/auth/reauthorize` | トークン無効時の再認可（`/api/auth/login` の URL を返す。SPA が遷移する） |
 
@@ -340,8 +340,10 @@ Redmine のスコープは権限名です。`rmapp` が機能として使うも�
 リフレッシュの一時的な失敗（接続エラー、5xx）は組を無効化せず、502
 `upstream_error` を返します。
 
-ログアウト時は `POST /redmine/oauth/revoke`（アクセス + リフレッシュ）を
-ベストエフォートで呼びます。失敗してもローカルの削除は行います。
+ログアウト時は、他の端末のセッションが残っていない場合に限り
+`POST /redmine/oauth/revoke`（リフレッシュ + アクセス）をベストエフォートで呼び、
+ローカルの組も削除します。Redmine に届かなくてもログアウトは完了させます
+（その場合の取り消しは Redmine の「マイアカウント」から行えます）。
 
 ---
 

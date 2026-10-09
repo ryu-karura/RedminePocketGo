@@ -1,8 +1,8 @@
 package store
 
 import (
-	"strings"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -24,10 +24,7 @@ func TestMigrateEmptyDB(t *testing.T) {
 	}
 
 	// Design.md §5 の全テーブルが存在すること。
-	for _, table := range []string{
-		"users", "credentials", "redmine_credentials",
-		"sessions", "enrollment_codes", "webauthn_challenges",
-	} {
+	for _, table := range []string{"users", "oauth_tokens", "oauth_states", "sessions"} {
 		var name string
 		err := s.DB().QueryRow(
 			"SELECT name FROM sqlite_master WHERE type='table' AND name=?", table,
@@ -55,8 +52,7 @@ func TestForeignKeysEnforced(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 	_, err := s.DB().Exec(
-		"INSERT INTO credentials (id, user_id, public_key) VALUES (?, ?, ?)",
-		[]byte{1}, "no-such-user", []byte{2},
+		"INSERT INTO oauth_tokens (user_id, access_ciphertext, access_nonce, refresh_ciphertext, refresh_nonce, access_expires_at) VALUES ('no-such-user', X'01', X'02', X'03', X'04', '2099-01-01T00:00:00Z')",
 	)
 	if err == nil {
 		t.Fatal("insert with dangling user_id succeeded; foreign keys are not enforced")
@@ -64,13 +60,13 @@ func TestForeignKeysEnforced(t *testing.T) {
 }
 
 func TestSessionsSchemaHoldsHashedIDOnly(t *testing.T) {
-	// sessions.id はハッシュのみを保存する設計（Design.md §5.4）。
-	// スキーマとして user/credential/期限の列が揃っていることを確認する。
+	// sessions.id はハッシュのみを保存する設計（Design.md §5.3）。
+	// スキーマとして user/期限の列が揃っていることを確認する。
 	s := openTestStore(t)
 	if err := s.Migrate(); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if _, err := s.DB().Exec("INSERT INTO users (id, redmine_login, webauthn_user_handle) VALUES ('u1', 'alice', X'01')"); err != nil {
+	if _, err := s.DB().Exec("INSERT INTO users (id, redmine_login) VALUES ('u1', 'alice')"); err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
 	_, err := s.DB().Exec(

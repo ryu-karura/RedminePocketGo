@@ -35,9 +35,8 @@ var allowlist = compileRules([]struct{ method, pattern string }{
 	{http.MethodGet, "/attachments/{id}.json"},
 	{http.MethodGet, "/custom_fields.json"},
 	// 注意: /my/account.json はここに載せない。応答本文に api_key が
-	// 含まれ、中継すると §9-1（API キーをブラウザに渡さない）に反する。
-	// 初回紐付けの本人確認は internal/auth の bootstrap がサーバー内で
-	// 直接叩く（中継経由ではない）。
+	// 含まれ、中継すると §9-1（API キー禁止）に反する。サーバー内部でも呼ばない
+	// （利用者の特定は GET /users/current.json を OAuth フローの中でだけ使う）。
 })
 
 // placeholderRe は `{id}` などのプレースホルダを見つける。

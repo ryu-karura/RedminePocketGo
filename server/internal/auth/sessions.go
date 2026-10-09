@@ -1,4 +1,4 @@
-// Package auth は WebAuthn セレモニー、セッション、レート制限を担う。
+// Package auth は OAuth ログイン、セッション、レート制限を担う。
 package auth
 
 import (
@@ -40,7 +40,7 @@ func NewSessions(st *store.Store, cfg Config) *Sessions {
 }
 
 // Issue は新しいセッションを発行し、クライアントに渡す生トークンを返す。
-func (s *Sessions) Issue(ctx context.Context, userID string, credentialID []byte) (string, error) {
+func (s *Sessions) Issue(ctx context.Context, userID string) (string, error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", fmt.Errorf("auth: セッショントークン生成に失敗しました: %w", err)
@@ -50,7 +50,6 @@ func (s *Sessions) Issue(ctx context.Context, userID string, credentialID []byte
 	if err := s.store.InsertSession(ctx, &store.Session{
 		IDHash:            hashToken(token),
 		UserID:            userID,
-		CredentialID:      credentialID,
 		CreatedAt:         now,
 		LastSeenAt:        now,
 		AbsoluteExpiresAt: now.Add(s.cfg.AbsoluteTimeout),

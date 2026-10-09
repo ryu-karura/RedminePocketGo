@@ -13,7 +13,6 @@ import (
 type Session struct {
 	IDHash            string
 	UserID            string
-	CredentialID      []byte
 	CreatedAt         time.Time
 	LastSeenAt        time.Time
 	AbsoluteExpiresAt time.Time
@@ -24,10 +23,9 @@ type User struct {
 	ID string
 	// RedmineUserID は Redmine のユーザー ID（同一性の鍵）。旧方式の行で
 	// 初回の OAuth ログイン前は 0。
-	RedmineUserID      int64
-	RedmineLogin       string
-	DisplayName        string
-	WebAuthnUserHandle []byte
+	RedmineUserID int64
+	RedmineLogin  string
+	DisplayName   string
 }
 
 const timeLayout = time.RFC3339Nano
@@ -36,30 +34,10 @@ func fmtTime(t time.Time) string { return t.UTC().Format(timeLayout) }
 
 func parseTime(s string) (time.Time, error) { return time.Parse(timeLayout, s) }
 
-// CreateUser は利用者を作成する。
-func (s *Store) CreateUser(ctx context.Context, u *User) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (id, redmine_login, display_name, webauthn_user_handle)
-		 VALUES (?, ?, ?, ?)`,
-		u.ID, u.RedmineLogin, u.DisplayName, u.WebAuthnUserHandle,
-	)
-	if err != nil {
-		return fmt.Errorf("store: ユーザー作成に失敗しました: %w", err)
-	}
-	return nil
-}
-
-// GetUserByLogin は Redmine ログイン名で利用者を引く。未登録は (nil, nil)。
-func (s *Store) GetUserByLogin(ctx context.Context, login string) (*User, error) {
-	return s.scanUser(s.db.QueryRowContext(ctx,
-		`SELECT id, redmine_user_id, redmine_login, display_name, webauthn_user_handle
-		 FROM users WHERE redmine_login = ?`, login))
-}
-
 // GetUserByID は ID で利用者を引く。未登録は (nil, nil)。
 func (s *Store) GetUserByID(ctx context.Context, id string) (*User, error) {
 	return s.scanUser(s.db.QueryRowContext(ctx,
-		`SELECT id, redmine_user_id, redmine_login, display_name, webauthn_user_handle
+		`SELECT id, redmine_user_id, redmine_login, display_name
 		 FROM users WHERE id = ?`, id))
 }
 
@@ -68,7 +46,7 @@ func (s *Store) scanUser(row *sql.Row) (*User, error) {
 		u    User
 		rmID sql.NullInt64
 	)
-	err := row.Scan(&u.ID, &rmID, &u.RedmineLogin, &u.DisplayName, &u.WebAuthnUserHandle)
+	err := row.Scan(&u.ID, &rmID, &u.RedmineLogin, &u.DisplayName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -82,9 +60,9 @@ func (s *Store) scanUser(row *sql.Row) (*User, error) {
 // InsertSession はセッションを保存する。
 func (s *Store) InsertSession(ctx context.Context, sess *Session) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, user_id, credential_id, created_at, last_seen_at, absolute_expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		sess.IDHash, sess.UserID, sess.CredentialID,
+		`INSERT INTO sessions (id, user_id, created_at, last_seen_at, absolute_expires_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		sess.IDHash, sess.UserID,
 		fmtTime(sess.CreatedAt), fmtTime(sess.LastSeenAt), fmtTime(sess.AbsoluteExpiresAt),
 	)
 	if err != nil {
@@ -100,9 +78,9 @@ func (s *Store) GetSession(ctx context.Context, idHash string) (*Session, error)
 		created, lastSeen, absExpires string
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, credential_id, created_at, last_seen_at, absolute_expires_at
+		`SELECT id, user_id, created_at, last_seen_at, absolute_expires_at
 		 FROM sessions WHERE id = ?`, idHash,
-	).Scan(&sess.IDHash, &sess.UserID, &sess.CredentialID, &created, &lastSeen, &absExpires)
+	).Scan(&sess.IDHash, &sess.UserID, &created, &lastSeen, &absExpires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -142,13 +120,16 @@ func (s *Store) DeleteSession(ctx context.Context, idHash string) error {
 	return nil
 }
 
-// DeleteSessionsByCredential は該当パスキーの全セッションを即失効させる
-// （端末削除時。Design.md §3.5）。
-func (s *Store) DeleteSessionsByCredential(ctx context.Context, credentialID []byte) error {
-	if _, err := s.db.ExecContext(ctx,
-		"DELETE FROM sessions WHERE credential_id = ?", credentialID,
-	); err != nil {
-		return fmt.Errorf("store: パスキーのセッション失効に失敗しました: %w", err)
+// CountActiveSessions は利用者の有効なセッション数（絶対期限内のもの）を返す。
+// ログアウト時に、他の端末のセッションが残っているかの判定に使う。アイドル
+// 期限はここでは見ない（過大に数えて、トークンを失効させない側に倒す）。
+func (s *Store) CountActiveSessions(ctx context.Context, userID string, now time.Time) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sessions WHERE user_id = ? AND absolute_expires_at > ?",
+		userID, fmtTime(now),
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: セッション数の取得に失敗しました: %w", err)
 	}
-	return nil
+	return n, nil
 }

@@ -262,3 +262,17 @@ func (m *Manager) doRefresh(ctx context.Context, userID, staleAccess string) (st
 	slog.Error("rotated OAuth tokens could not be persisted", "userID", userID, "error", saveErr)
 	return "", ErrPersistFailed
 }
+
+// MarkInvalid は更新したトークンまで上流に拒否されたときに組を無効にする
+// （中継が呼ぶ。再認可が必要になる）。
+func (m *Manager) MarkInvalid(ctx context.Context, userID string) error {
+	return m.vault.MarkTokensInvalid(ctx, userID)
+}
+
+// Ensure は利用者が有効なトークンの組を持つことを確かめる（期限が近ければ先に
+// 更新する）。値は返さない。集約ハンドラが、キャッシュ命中時にも未連携・無効を
+// 早く検出するために使う。
+func (m *Manager) Ensure(ctx context.Context, userID string) error {
+	_, err := m.AccessToken(ctx, userID)
+	return err
+}

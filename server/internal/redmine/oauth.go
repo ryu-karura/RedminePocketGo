@@ -229,7 +229,7 @@ func (c *Client) CurrentUser(ctx context.Context, accessToken string) (*CurrentU
 			Lastname  string `json:"lastname"`
 		} `json:"user"`
 	}
-	if err := c.getBearer(ctx, accessToken, "/users/current.json", nil, &wrap); err != nil {
+	if err := c.get(ctx, accessToken, "/users/current.json", nil, &wrap); err != nil {
 		return nil, err
 	}
 	u := wrap.User

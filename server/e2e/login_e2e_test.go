@@ -1,7 +1,7 @@
 //go:build e2e
 
-// Package e2e はブラウザ実機（chromedp + 同梱 Chromium）でパスキーの
-// 登録・ログインを自動検証する。無人実行では手動ブラウザ確認の代わりに
+// Package e2e はブラウザ実機（chromedp + 同梱 Chromium）で OAuth ログインと
+// 各画面を自動検証する。無人実行では手動ブラウザ確認の代わりに
 // これを回す（plan.md フェーズ 5・6 完了条件）。npm 依存なし。
 //
 // 実行: make test-e2e（build tag e2e）。Chromium は環境同梱の
@@ -10,10 +10,13 @@ package e2e
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,37 +25,194 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/runtime"
-	"github.com/chromedp/cdproto/webauthn"
 	"github.com/chromedp/chromedp"
 )
 
-// fakeRedmine は E2E に必要な上流エンドポイントだけを返す:
-//   - /my/account.json … ブートストラップ（BasicAuth → api_key を返す）
-//   - /projects.json    … 集約 API（X-Redmine-Api-Key 検証、親子ツリー）
+// upstreamState は擬似 Redmine の可変状態。OAuth 2.0 の提供側（認可・トークン・
+// 失効・users/current）を最小限で再現し、テストが「トークン期限切れ」「利用者に
+// よる取り消し」「同意拒否」を切り替えられるようにする。
 //
-// subURI="" のため、上流パスにサブ URI は付かない。未対応パスは 404 にして
-// 経路の取り違えを検知する。
-// upstreamState is the mutable knobs the test flips at runtime.
+// 実機（Redmine 7.0.2）で確認した挙動（Design.md §14）に合わせる: PKCE の検証、
+// 認可コードの 1 回限り、リフレッシュでのリフレッシュトークンの入れ替えと旧トークンの
+// 即時失効、失効後は 401。Redmine の API キーは存在しない — 受け取ったら記録して
+// テスト末尾で失敗させる。
 type upstreamState struct {
-	mu                sync.Mutex
-	credentialInvalid bool // true にすると /projects.json が常に 401 を返す
+	mu sync.Mutex
+
+	seq          int
+	codes        map[string]string // 認可コード → code_challenge
+	access       map[string]bool   // 有効なアクセストークン
+	refresh      map[string]bool   // 有効なリフレッシュトークン
+	denyNext     bool              // true なら次の認可要求を access_denied で返す
+	refreshCalls int
+	revokeCalls  int
+	apiKeySeen   int // X-Redmine-Api-Key を受け取った回数（0 でなければならない）
 }
 
-func (s *upstreamState) setCredentialInvalid(v bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.credentialInvalid = v
+const (
+	e2eClientID     = "e2e-client"
+	e2eClientSecret = "e2e-dummy-client-secret"
+	e2eRedirectURI  = "http://localhost:18099/api/auth/callback"
+)
+
+func newUpstreamState() *upstreamState {
+	return &upstreamState{codes: map[string]string{}, access: map[string]bool{}, refresh: map[string]bool{}}
 }
 
-func (s *upstreamState) isCredentialInvalid() bool {
+func (s *upstreamState) setDenyNext(v bool) { s.mu.Lock(); s.denyNext = v; s.mu.Unlock() }
+
+// expireAccess は発行済みのアクセストークンだけを失効させる（リフレッシュは有効）。
+// 次の API 呼び出しは 401 → 黙ってリフレッシュ → 再試行で成功するはず。
+func (s *upstreamState) expireAccess() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.credentialInvalid
+	s.access = map[string]bool{}
+}
+
+// revokeAll は利用者が Redmine で取り消した状況: アクセスもリフレッシュも無効。
+func (s *upstreamState) revokeAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.access = map[string]bool{}
+	s.refresh = map[string]bool{}
+}
+
+func (s *upstreamState) counters() (refreshCalls, revokeCalls, apiKeySeen int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refreshCalls, s.revokeCalls, s.apiKeySeen
+}
+
+// authorized は Bearer が有効なアクセストークンか。API キーのヘッダーは記録する。
+func (s *upstreamState) authorized(r *http.Request) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r.Header.Get("X-Redmine-Api-Key") != "" {
+		s.apiKeySeen++
+	}
+	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return tok != "" && s.access[tok]
+}
+
+func (s *upstreamState) clientOK(r *http.Request) bool {
+	return r.PostForm.Get("client_id") == e2eClientID && r.PostForm.Get("client_secret") == e2eClientSecret
+}
+
+func jsonErr(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	fmt.Fprintf(w, `{"error":%q}`, code)
+}
+
+// handleOAuth は OAuth 関連のパスを処理し、処理したら true を返す。
+// 実際の Redmine はここで利用者のログインと同意の画面を出すが、E2E は「Redmine に
+// ログイン済みで同意済み」の状況として、認可要求を即座に承認して戻す。
+func (s *upstreamState) handleOAuth(w http.ResponseWriter, r *http.Request) bool {
+	switch r.URL.Path {
+	case "/oauth/authorize":
+		q := r.URL.Query()
+		if q.Get("client_id") != e2eClientID || q.Get("redirect_uri") != e2eRedirectURI ||
+			q.Get("response_type") != "code" || q.Get("code_challenge_method") != "S256" ||
+			q.Get("code_challenge") == "" || q.Get("state") == "" {
+			http.Error(w, "bad authorize request", http.StatusBadRequest)
+			return true
+		}
+		s.mu.Lock()
+		deny := s.denyNext
+		s.denyNext = false
+		s.seq++
+		code := fmt.Sprintf("CODE-%d", s.seq)
+		if !deny {
+			s.codes[code] = q.Get("code_challenge")
+		}
+		s.mu.Unlock()
+		u, _ := url.Parse(e2eRedirectURI)
+		v := u.Query()
+		v.Set("state", q.Get("state"))
+		if deny {
+			v.Set("error", "access_denied")
+		} else {
+			v.Set("code", code)
+		}
+		u.RawQuery = v.Encode()
+		http.Redirect(w, r, u.String(), http.StatusFound)
+		return true
+
+	case "/oauth/token":
+		_ = r.ParseForm()
+		if !s.clientOK(r) {
+			jsonErr(w, http.StatusUnauthorized, "invalid_client")
+			return true
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		switch r.PostForm.Get("grant_type") {
+		case "authorization_code":
+			code := r.PostForm.Get("code")
+			challenge, ok := s.codes[code]
+			delete(s.codes, code) // 1 回限り
+			sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
+			if !ok || r.PostForm.Get("redirect_uri") != e2eRedirectURI ||
+				base64.RawURLEncoding.EncodeToString(sum[:]) != challenge {
+				jsonErr(w, http.StatusBadRequest, "invalid_grant")
+				return true
+			}
+		case "refresh_token":
+			rt := r.PostForm.Get("refresh_token")
+			if !s.refresh[rt] {
+				jsonErr(w, http.StatusBadRequest, "invalid_grant")
+				return true
+			}
+			delete(s.refresh, rt) // 入れ替わり: 旧リフレッシュトークンは即失効
+			s.refreshCalls++
+		default:
+			jsonErr(w, http.StatusBadRequest, "unsupported_grant_type")
+			return true
+		}
+		s.seq++
+		at, rt := fmt.Sprintf("AT-%d", s.seq), fmt.Sprintf("RT-%d", s.seq)
+		s.access[at], s.refresh[rt] = true, true
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":%q,"token_type":"Bearer","expires_in":7200,"refresh_token":%q,`+
+			`"scope":"view_project view_issues add_issues edit_issues add_issue_notes view_members","created_at":%d}`,
+			at, rt, time.Now().Unix())
+		return true
+
+	case "/oauth/revoke":
+		_ = r.ParseForm()
+		if !s.clientOK(r) {
+			jsonErr(w, http.StatusUnauthorized, "invalid_client")
+			return true
+		}
+		s.mu.Lock()
+		tok := r.PostForm.Get("token")
+		s.revokeCalls++
+		if s.refresh[tok] {
+			// Doorkeeper ではリフレッシュトークンの失効はトークンの組ごとの失効。
+			s.access = map[string]bool{}
+		}
+		delete(s.refresh, tok)
+		delete(s.access, tok)
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+		return true
+
+	case "/users/current.json":
+		if !s.authorized(r) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"user":{"id":5,"login":"alice","firstname":"Alice","lastname":"Doe"}}`)
+		return true
+	}
+	return false
 }
 
 func fakeRedmine(t *testing.T) (*httptest.Server, *upstreamState) {
 	t.Helper()
-	state := &upstreamState{}
+	state := newUpstreamState()
 	// チケット 101 の状態はインライン編集で書き換わる（PUT を保持し GET に反映）。
 	var mu sync.Mutex
 	statusID, statusName := 2, "進行中"
@@ -67,9 +227,12 @@ func fakeRedmine(t *testing.T) (*httptest.Server, *upstreamState) {
 	created := map[int]createdIssue{}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if state.handleOAuth(w, r) {
+			return
+		}
 		// 個別チケット（詳細取得 / インライン更新）。/issues/{id}.json。
 		if strings.HasPrefix(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, ".json") {
-			if state.isCredentialInvalid() || r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
+			if !state.authorized(r) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -127,16 +290,8 @@ func fakeRedmine(t *testing.T) (*httptest.Server, *upstreamState) {
 			return
 		}
 		switch r.URL.Path {
-		case "/my/account.json":
-			user, pass, ok := r.BasicAuth()
-			if !ok || user != "alice" || pass != "secret" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"user":{"login":"alice","firstname":"Alice","lastname":"Doe","api_key":"e2e-key"}}`)
 		case "/projects.json":
-			if state.isCredentialInvalid() || r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
+			if !state.authorized(r) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -149,7 +304,7 @@ func fakeRedmine(t *testing.T) (*httptest.Server, *upstreamState) {
 				`{"id":4,"name":"社内インフラ","identifier":"infra"}`+
 				`],"total_count":4,"offset":0,"limit":100}`)
 		case "/issues.json":
-			if r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
+			if !state.authorized(r) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -200,20 +355,32 @@ func fakeRedmine(t *testing.T) (*httptest.Server, *upstreamState) {
 			}
 			fmt.Fprint(w, `{"issues":[],"total_count":0,"offset":0,"limit":100}`)
 		case "/trackers.json":
+			if !state.authorized(r) {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"trackers":[{"id":1,"name":"バグ"}]}`)
 		case "/issue_statuses.json":
+			if !state.authorized(r) {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"issue_statuses":[`+
 				`{"id":1,"name":"新規","is_closed":false},`+
 				`{"id":2,"name":"進行中","is_closed":false},`+
 				`{"id":5,"name":"完了","is_closed":true}]}`)
 		case "/enumerations/issue_priorities.json":
+			if !state.authorized(r) {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"issue_priorities":[`+
 				`{"id":3,"name":"低"},{"id":4,"name":"通常"},{"id":6,"name":"高"}]}`)
 		case "/custom_fields.json":
-			if state.isCredentialInvalid() || r.Header.Get("X-Redmine-Api-Key") != "e2e-key" {
+			if !state.authorized(r) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -247,10 +414,10 @@ func chromePath(t *testing.T) string {
 	return ""
 }
 
-func TestLoginBootstrapRegisterFlow(t *testing.T) {
+func TestOAuthLoginAndScreens(t *testing.T) {
 	redmine, upstream := fakeRedmine(t)
 
-	// rmapp をポート 18099 で起動（app/ を配信）。RP ID は localhost。
+	// rmapp をポート 18099 で起動（app/ を配信）。
 	srv := startRmapp(t, redmine.URL)
 	defer srv.stop()
 
@@ -284,32 +451,6 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 		}
 	})
 
-	// CDP WebAuthn 仮想認証器: Discoverable(resident) + UV 成功を即時シミュレート。
-	var authID webauthn.AuthenticatorID
-	if err := chromedp.Run(ctx,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			if err := webauthn.Enable().Do(ctx); err != nil {
-				return err
-			}
-			id, err := webauthn.AddVirtualAuthenticator(&webauthn.VirtualAuthenticatorOptions{
-				Protocol:                    webauthn.AuthenticatorProtocolCtap2,
-				Transport:                   webauthn.AuthenticatorTransportInternal,
-				HasResidentKey:              true,
-				HasUserVerification:         true,
-				AutomaticPresenceSimulation: true,
-				IsUserVerified:              true,
-			}).Do(ctx)
-			if err != nil {
-				return err
-			}
-			authID = id
-			return nil
-		}),
-	); err != nil {
-		t.Fatalf("virtual authenticator setup: %v", err)
-	}
-	_ = authID
-
 	base := "http://localhost:18099"
 	shot := func(name string) chromedp.Action {
 		return chromedp.ActionFunc(func(ctx context.Context) error {
@@ -330,43 +471,33 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 		})
 	}
 
-	// ブートストラップ経路でユーザー作成 + パスキー登録 → セッション発行。
+	// OAuth ログイン: ボタン → /api/auth/login → 擬似 Redmine の認可（即承認）→
+	// /api/auth/callback → セッション発行 → アプリ画面。
 	var meText string
 	err := chromedp.Run(ctx,
 		chromedp.Navigate(base),
-		chromedp.WaitVisible(`#bootstrapLink`, chromedp.ByID),
+		chromedp.WaitVisible(`#loginBtn`, chromedp.ByID),
 		shot("01-login.png"),
-		chromedp.Click(`#bootstrapLink`, chromedp.ByID),
-		chromedp.WaitVisible(`#bsLogin`, chromedp.ByID),
-		chromedp.SendKeys(`#bsLogin`, "alice", chromedp.ByID),
-		chromedp.SendKeys(`#bsPass`, "secret", chromedp.ByID),
-		chromedp.Click(`#bootstrapForm button[type=submit]`, chromedp.ByQuery),
-		// 登録完了でオーバーレイが閉じ、ドロワーに画面リンクが出る。
+		chromedp.Click(`#loginBtn`, chromedp.ByID),
+		// ログイン完了でオーバーレイが閉じ、ドロワーに画面リンクが出る。
 		waitDrawerOrDump(t, 25*time.Second),
 		shot("02-authenticated.png"),
-		// /api/auth/me が認証済みを返すことを確認（Promise を待つ）。
+		// /api/auth/me が認証済みを返し、連携状態とスコープが載ることを確認する。
 		chromedp.Evaluate(`fetch('/api/auth/me').then(r=>r.text())`, &meText,
 			func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 				return p.WithAwaitPromise(true)
 			}),
 	)
 	if err != nil {
-		t.Fatalf("bootstrap+register flow: %v", err)
+		t.Fatalf("oauth login flow: %v", err)
 	}
-	if !containsAll(meText, `"userId"`, `alice`) {
-		t.Fatalf("/api/auth/me after register did not show the user: %s", meText)
+	if !containsAll(meText, `"userId"`, `alice`, `"redmineStatus":"active"`, `view_issues`) {
+		t.Fatalf("/api/auth/me after login did not show the user and grant: %s", meText)
 	}
-
-	// 一旦ログアウトして、パスキー単独でのログインも通ることを確認。
-	err = chromedp.Run(ctx,
-		chromedp.Evaluate(`window.rmappLogout && window.rmappLogout()`, nil),
-		chromedp.WaitVisible(`#passkeyBtn`, chromedp.ByID),
-		chromedp.Click(`#passkeyBtn`, chromedp.ByID),
-		chromedp.WaitVisible(`.drawer__link`, chromedp.ByQuery),
-		shot("03-passkey-login.png"),
-	)
-	if err != nil {
-		t.Fatalf("passkey login flow: %v", err)
+	for _, leak := range []string{"AT-", "RT-", "access_token", "refresh_token"} {
+		if strings.Contains(meText, leak) {
+			t.Fatalf("/api/auth/me leaks token material (%q): %s", leak, meText)
+		}
 	}
 
 	// プロジェクト一覧が集約 API から dataTree で描画され、検索で絞り込めること
@@ -509,86 +640,177 @@ func TestLoginBootstrapRegisterFlow(t *testing.T) {
 		t.Fatalf("issue create modal flow: %v", err)
 	}
 
-	// 設定画面: 登録済み端末（ブートストラップで作った 1 台）と Redmine 連携
-	// 状態（連携済み）が表示され、登録コードの発行で 6 桁コードが出ることを
-	// 確認する。
+	// 設定画面: Redmine 連携の状態（連携済み）、付与スコープ、再認可ボタンが表示される。
 	err = chromedp.Run(ctx,
 		chromedp.Navigate(base+"/#settings"),
 		chromedp.Poll(
 			`(function(){var t=document.querySelector('.screen.active');if(!t)return false;`+
-				`var s=t.innerText;return s.indexOf('連携済み')>=0 && s.indexOf('端末')>=0 `+
-				`&& document.querySelectorAll('.screen.active .device-row').length>=1;})()`,
+				`var s=t.innerText;return s.indexOf('連携済み')>=0 && s.indexOf('view_issues')>=0 `+
+				`&& !!t.querySelector('#reauthBtn') && s.indexOf('端末')<0;})()`,
 			nil, chromedp.WithPollingTimeout(20*time.Second)),
 		shot("12-settings.png"),
-		chromedp.Click(`.screen.active #enrollIssue`, chromedp.ByQuery),
-		chromedp.Poll(
-			`(function(){var t=document.querySelector('.screen.active .enrollment-code__value');`+
-				`return !!t && /^\d{6}$/.test(t.innerText.trim());})()`,
-			nil, chromedp.WithPollingTimeout(20*time.Second)),
-		shot("13-settings-enrollment-code.png"),
 	)
 	if err != nil {
 		t.Fatalf("settings screen flow: %v", err)
 	}
 
-	// error+retry と redmine_credential_invalid → 再紐付けの導線（Design.md
-	// §4.4・§7.10、フェーズ 6 完了条件）: 上流を 401 に切り替えてチケット詳細を
-	// 開くと（集約はキャッシュしないので必ず上流へ問い合わせる。§6.6）、
-	// キーが無効化され error+retry 状態が出る。設定画面では「要再連携」に
-	// 変わり、認証情報を再入力すると連携済みに戻る。
-	upstream.setCredentialInvalid(true)
-	err = chromedp.Run(ctx,
-		chromedp.Navigate(base+"/#issue-detail/101"),
-		chromedp.Poll(
-			`(function(){var t=document.querySelector('.screen.active .state-error');`+
-				`return !!t && t.innerText.indexOf('再度連携')>=0 && !!t.querySelector('button');})()`,
-			nil, chromedp.WithPollingTimeout(20*time.Second)),
-		shot("14-issue-detail-error-invalid.png"),
-	)
-	if err != nil {
-		t.Fatalf("credential-invalid error state: %v", err)
-	}
-
-	err = chromedp.Run(ctx,
-		chromedp.Navigate(base+"/#settings"),
-		chromedp.Poll(
-			`(function(){var t=document.querySelector('.screen.active');`+
-				`return !!t && t.innerText.indexOf('要再連携')>=0;})()`,
-			nil, chromedp.WithPollingTimeout(20*time.Second)),
-		shot("15-settings-relink-needed.png"),
-		chromedp.Click(`.screen.active #relinkToggle`, chromedp.ByQuery),
-		chromedp.WaitVisible(`.screen.active #relinkForm`, chromedp.ByQuery),
-		chromedp.SendKeys(`.screen.active #relinkLogin`, "alice", chromedp.ByQuery),
-		chromedp.SendKeys(`.screen.active #relinkPassword`, "secret", chromedp.ByQuery),
-		// 直前の操作で出た通知トーストが画面下寄りに残っていると、固定位置の
-		// トーストが送信ボタンの実クリック座標を覆ってクリックを奪うことがある
-		// ため、送信前に消しておく（実利用では 4 秒の自動消去を待てば起きない）。
-		chromedp.Evaluate(`document.querySelectorAll('#toasts .toast').forEach(function(t){t.remove();})`, nil),
-		chromedp.Click(`.screen.active #relinkSubmit`, chromedp.ByQuery),
-		chromedp.Poll(
-			`(function(){var t=document.querySelector('.screen.active');`+
-				`return !!t && t.innerText.indexOf('連携済み')>=0;})()`,
-			nil, chromedp.WithPollingTimeout(20*time.Second)),
-		shot("16-settings-relinked.png"),
-	)
-	if err != nil {
-		t.Fatalf("relink flow: %v", err)
-	}
-
-	// 復旧確認: 直前まで失敗していたチケット詳細が再び populated に戻ることを
-	// 確認する（同じ経路で再紐付けの効果を検証する）。
-	upstream.setCredentialInvalid(false)
+	// アクセストークンの期限切れ: 上流が 401 を返しても、サーバーが黙ってリフレッシュ
+	// して再試行するので、利用者には何も見えない（再認可の案内は出ない）。
+	upstream.expireAccess()
 	err = chromedp.Run(ctx,
 		chromedp.Navigate(base+"/#issue-detail/101"),
 		chromedp.Poll(
 			`(function(){var t=document.querySelector('.screen.active .issue-detail');`+
 				`return !!t && t.innerText.indexOf('帳票出力の刷新')>=0;})()`,
 			nil, chromedp.WithPollingTimeout(20*time.Second)),
-		shot("17-issue-detail-recovered.png"),
+		shot("13-silent-refresh.png"),
 	)
 	if err != nil {
-		t.Fatalf("post-relink recovery: %v", err)
+		t.Fatalf("silent refresh flow: %v", err)
 	}
+	if refreshes, _, _ := upstream.counters(); refreshes < 1 {
+		t.Fatalf("refresh calls = %d; want >= 1 after the access token expired", refreshes)
+	}
+	var overlayActive bool
+	if err := chromedp.Run(ctx, chromedp.Evaluate(
+		`document.getElementById('loginOverlay').classList.contains('active')`, &overlayActive)); err != nil {
+		t.Fatal(err)
+	}
+	if overlayActive {
+		t.Fatal("a re-authorization prompt appeared although the refresh succeeded")
+	}
+
+	// 利用者が Redmine で許可を取り消した: リフレッシュも拒否される → 409
+	// redmine_credential_invalid → アプリ全体で再認可の案内。再認可すると元の画面
+	//（チケット詳細）へ戻り、再び表示できる（Design.md §4.4・§7.5）。
+	// Redmine を呼ぶ画面（チケット詳細）で検出される。設定画面は me だけで
+	// Redmine を呼ばないため、取り消しを検出するのは次に Redmine を呼ぶ時。
+	upstream.revokeAll()
+	err = chromedp.Run(ctx,
+		chromedp.Navigate(base+"/#settings"),
+		chromedp.Poll(`!!document.querySelector('.screen.active #reauthBtn')`, nil, chromedp.WithPollingTimeout(20*time.Second)),
+		chromedp.Navigate(base+"/#issue-detail/101"),
+		chromedp.Poll(`(function(){var o=document.getElementById('loginOverlay');return o.classList.contains('active') && !!o.querySelector('#reauthBtn');})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("14-reauthorize-prompt.png"),
+	)
+	if err != nil {
+		t.Fatalf("reauthorize prompt: %v", err)
+	}
+	err = chromedp.Run(ctx,
+		chromedp.Evaluate(`document.querySelectorAll('#toasts .toast').forEach(function(t){t.remove();})`, nil),
+		chromedp.Evaluate(`window.__beforeReauth = true`, nil),
+		chromedp.Click(`#loginOverlay #reauthBtn`, chromedp.ByQuery),
+		// Redmine（擬似）の認可 → コールバック → 元のハッシュ（チケット詳細）へ戻り、
+		// 直前まで失敗していた画面が表示できる。
+		waitJS(30*time.Second,
+			`(function(){if(window.__beforeReauth)return false;var t=document.querySelector('.screen.active .issue-detail');`+
+				`return !!t && t.innerText.indexOf('帳票出力の刷新')>=0 && location.hash==='#issue-detail/101' `+
+				`&& !document.getElementById('loginOverlay').classList.contains('active');})()`),
+		shot("15-reauthorized-back-to-detail.png"),
+		// 設定画面の連携状態も「連携済み」に戻っている。
+		chromedp.Navigate(base+"/#settings"),
+		chromedp.Poll(`(function(){var t=document.querySelector('.screen.active');return !!t && t.innerText.indexOf('連携済み')>=0;})()`,
+			nil, chromedp.WithPollingTimeout(20*time.Second)),
+		shot("16-settings-after-reauthorize.png"),
+	)
+	if err != nil {
+		t.Fatalf("reauthorize flow: %v", err)
+	}
+
+	// 設定画面の「Redmine で再認可」ボタンからも同じフローを開始できる（再認可後は
+	// #settings に戻る）。
+	err = chromedp.Run(ctx,
+		chromedp.Navigate(base+"/#settings"),
+		chromedp.WaitVisible(`.screen.active #reauthBtn`, chromedp.ByQuery),
+		chromedp.Evaluate(`document.querySelectorAll('#toasts .toast').forEach(function(t){t.remove();})`, nil),
+		// 遷移前のページの目印。新しいページ（OAuth を一周して戻ってきた後）には無い。
+		chromedp.Evaluate(`window.__beforeReauth = true`, nil),
+		chromedp.Click(`.screen.active #reauthBtn`, chromedp.ByQuery),
+		waitJS(30*time.Second,
+			`(function(){if(window.__beforeReauth)return false;var t=document.querySelector('.screen.active');`+
+				`return !!t && t.innerText.indexOf('連携済み')>=0 `+
+				`&& location.hash==='#settings' && !document.getElementById('loginOverlay').classList.contains('active');})()`),
+	)
+	if err != nil {
+		t.Fatalf("reauthorize from settings: %v", err)
+	}
+
+	// 同意の拒否: ログアウト後、Redmine 側で拒否されるとログイン画面に理由が出る
+	//（セッションは発行されない）。もう一度ログインすれば入れる。
+	err = chromedp.Run(ctx,
+		chromedp.Evaluate(`window.rmappLogout && window.rmappLogout()`, nil),
+		chromedp.WaitVisible(`#loginBtn`, chromedp.ByID),
+	)
+	if err != nil {
+		t.Fatalf("logout: %v", err)
+	}
+	upstream.setDenyNext(true)
+	var loginErrText string
+	err = chromedp.Run(ctx,
+		chromedp.Click(`#loginBtn`, chromedp.ByID),
+		chromedp.WaitVisible(`#loginBtn`, chromedp.ByID),
+		chromedp.Poll(`document.getElementById('loginError').innerText.length > 0`, nil, chromedp.WithPollingTimeout(20*time.Second)),
+		chromedp.Text(`#loginError`, &loginErrText, chromedp.ByID),
+		shot("17-login-denied.png"),
+	)
+	if err != nil {
+		t.Fatalf("denied consent flow: %v", err)
+	}
+	if !strings.Contains(loginErrText, "許可") {
+		t.Fatalf("denied-consent message = %q; want a message about the permission", loginErrText)
+	}
+	var hashAfter string
+	_ = chromedp.Run(ctx, chromedp.Evaluate(`location.hash`, &hashAfter))
+	if strings.Contains(hashAfter, "error") {
+		t.Fatalf("the error hash was not cleared: %q", hashAfter)
+	}
+	err = chromedp.Run(ctx,
+		chromedp.Click(`#loginBtn`, chromedp.ByID),
+		waitDrawerOrDump(t, 25*time.Second),
+		shot("18-login-after-denied.png"),
+	)
+	if err != nil {
+		t.Fatalf("login after a denied attempt: %v", err)
+	}
+
+	// ログアウトは最後の端末なので、Redmine 側のトークンも失効させる。
+	_, revokesBefore, _ := upstream.counters()
+	err = chromedp.Run(ctx,
+		chromedp.Evaluate(`window.rmappLogout && window.rmappLogout()`, nil),
+		chromedp.WaitVisible(`#loginBtn`, chromedp.ByID),
+	)
+	if err != nil {
+		t.Fatalf("final logout: %v", err)
+	}
+	if _, revokesAfter, _ := upstream.counters(); revokesAfter-revokesBefore < 2 {
+		t.Errorf("revoke calls during logout = %d; want >= 2 (refresh + access token)", revokesAfter-revokesBefore)
+	}
+
+	// Redmine の API キーは一度も送られていない（CLAUDE.md §9-1）。
+	if _, _, apiKeys := upstream.counters(); apiKeys != 0 {
+		t.Errorf("upstream received X-Redmine-Api-Key %d times; want 0", apiKeys)
+	}
+}
+
+// waitJS は式が true になるまで繰り返し評価する。ページ遷移の最中（OAuth の
+// リダイレクトの連鎖）に評価が当たって「実行コンテキストが破棄された」エラー
+// になるのは想定内なので、時間切れまで握りつぶして再試行する。
+func waitJS(d time.Duration, expr string) chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		deadline := time.Now().Add(d)
+		var last error
+		for time.Now().Before(deadline) {
+			var ok bool
+			if err := chromedp.Evaluate(expr, &ok).Do(ctx); err == nil && ok {
+				return nil
+			} else {
+				last = err
+			}
+			time.Sleep(150 * time.Millisecond)
+		}
+		return fmt.Errorf("waitJS timed out (%s): last error: %v", expr, last)
+	})
 }
 
 // waitDrawerOrDump は .drawer__link の出現を待ち、時間切れならログイン

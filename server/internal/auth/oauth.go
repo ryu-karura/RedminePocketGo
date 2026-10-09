@@ -156,7 +156,7 @@ func (l *OAuthLogin) Complete(ctx context.Context, code, state string) (sessionT
 	if err := l.d.Vault.SaveTokens(ctx, user.ID, ts); err != nil {
 		return "", "", err
 	}
-	token, err := l.d.Sessions.Issue(ctx, user.ID, nil)
+	token, err := l.d.Sessions.Issue(ctx, user.ID)
 	if err != nil {
 		return "", "", err
 	}

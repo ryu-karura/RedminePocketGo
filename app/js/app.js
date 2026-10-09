@@ -6,7 +6,9 @@ import {
   initTheme, initDrawer, setActiveNav, setTitle, toast, showLogin, hideLogin,
 } from './common/shell.js';
 import { openModal, closeModal, isModalHash } from './common/modal.js';
-import { initLogin } from './screens/login.js';
+import { initLogin, initReauthPrompt } from './screens/login.js';
+import { loginErrorFromHash, loginErrorMessage } from './common/loginfmt.js';
+import { startReauthorize } from './common/reauth.js';
 
 // SCREENS: key / label / init。login はオーバーレイなのでナビには出さない。
 // 業務画面（projects 以降）はフェーズ 6 で js/screens/<key>.js を実装する。
@@ -153,6 +155,19 @@ async function route() {
 
 async function bootstrap() {
   initTheme();
+
+  // OAuth のコールバックが失敗すると `#login?error=<code>` で戻ってくる。理由を
+  // 取り出したらハッシュは消す（再読み込みで同じ表示を繰り返さない）。
+  const loginError = loginErrorFromHash(location.hash);
+  let returnHash = location.hash;
+  if (loginError) {
+    history.replaceState(null, '', location.pathname + location.search);
+    returnHash = '';
+  }
+
+  // Redmine との連携が切れたら（どの画面の API でも）再認可の案内を出す。
+  window.addEventListener('rmapp:reauth-required', presentReauth);
+
   let me = null;
   try {
     me = await apiGetJson('/api/auth/me');
@@ -164,19 +179,32 @@ async function bootstrap() {
   }
 
   if (!me) {
-    presentLogin();
+    presentLogin({ error: loginError, returnHash });
     return;
   }
   enterApp();
+  if (loginError) toast(loginErrorMessage(loginError), 'crit');
 }
 
 let authed = false; // 認証済みか（route のガード）
 let wired = false; // 一度だけ行う配線（多重登録防止）
 
-function presentLogin() {
+function presentLogin({ error = '', returnHash = '' } = {}) {
+  reauthShown = false;
   const node = document.createElement('div');
   showLogin(node);
-  initLogin(node, { onSuccess: () => enterApp() });
+  initLogin(node, { error, returnHash });
+}
+
+let reauthShown = false; // 再認可の案内は重ねて出さない
+
+// presentReauth は連携が切れたことを伝え、再認可へ進ませる全面の案内。
+function presentReauth() {
+  if (reauthShown || !authed) return;
+  reauthShown = true;
+  const node = document.createElement('div');
+  showLogin(node);
+  initReauthPrompt(node, { onReauthorize: () => startReauthorize(location.hash) });
 }
 
 function enterApp() {

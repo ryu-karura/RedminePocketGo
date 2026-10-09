@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// ErrUnauthorized は資格情報（API キー／アクセストークン）が上流に拒否された
+// ErrUnauthorized はアクセストークンが上流に拒否された
 // （401）。呼び出し側は更新または無効化の上、409 を返す。
 var ErrUnauthorized = errors.New("redmine: 資格情報が拒否されました")
 
@@ -123,7 +123,7 @@ type Status struct {
 	IsClosed bool   `json:"is_closed"`
 }
 
-// Ping は上流への到達性のみを確認する（readyz 用）。API キー・リトライ・
+// Ping は上流への到達性のみを確認する（readyz 用）。認証・リトライ・
 // 同時接続の上限は使わない — レスポンスが返れば（ステータスを問わず）
 // 到達可能とみなし、接続自体ができない場合のみ ErrUpstream を返す。
 func (c *Client) Ping(ctx context.Context) error {
@@ -200,19 +200,10 @@ type Membership struct {
 
 // ---- 取得 ----
 
-// get は 1 リクエストを実行し JSON を v に読む。一時的な失敗（接続エラー、
+// get は 1 リクエスト（Bearer 認証）を実行し JSON を v に読む。一時的な失敗（接続エラー、
 // 502、503）に限り指数バックオフで最大 maxRetries 回再試行する。4xx は
 // 再試行しない（Design.md §9）。
-func (c *Client) get(ctx context.Context, apiKey, path string, query url.Values, v any) error {
-	return c.getWith(ctx, func(r *http.Request) { r.Header.Set("X-Redmine-Api-Key", apiKey) }, path, query, v)
-}
-
-// getBearer は OAuth のアクセストークンで GET する。
-func (c *Client) getBearer(ctx context.Context, accessToken, path string, query url.Values, v any) error {
-	return c.getWith(ctx, func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+accessToken) }, path, query, v)
-}
-
-func (c *Client) getWith(ctx context.Context, setAuth func(*http.Request), path string, query url.Values, v any) error {
+func (c *Client) get(ctx context.Context, token, path string, query url.Values, v any) error {
 	c.sem <- struct{}{}
 	defer func() { <-c.sem }()
 
@@ -227,7 +218,8 @@ func (c *Client) getWith(ctx context.Context, setAuth func(*http.Request), path 
 		if err != nil {
 			return fmt.Errorf("redmine: リクエスト作成に失敗しました: %w", err)
 		}
-		setAuth(req)
+		// Redmine の API キーは使わない。利用者の OAuth アクセストークンのみ。
+		req.Header.Set("Authorization", "Bearer "+token)
 
 		resp, err := c.http.Do(req)
 		switch {
@@ -298,7 +290,7 @@ func (c *Client) paginate(fetch func(offset int) (count, total int, err error)) 
 }
 
 // ListProjects は全プロジェクトを取得する（ページング）。
-func (c *Client) ListProjects(ctx context.Context, apiKey string) ([]Project, error) {
+func (c *Client) ListProjects(ctx context.Context, token string) ([]Project, error) {
 	var out []Project
 	err := c.paginate(func(offset int) (int, int, error) {
 		var page struct {
@@ -309,7 +301,7 @@ func (c *Client) ListProjects(ctx context.Context, apiKey string) ([]Project, er
 			"offset": {strconv.Itoa(offset)},
 			"limit":  {strconv.Itoa(c.pageSize)},
 		}
-		if err := c.get(ctx, apiKey, "/projects.json", q, &page); err != nil {
+		if err := c.get(ctx, token, "/projects.json", q, &page); err != nil {
 			return 0, 0, err
 		}
 		out = append(out, page.Projects...)
@@ -323,7 +315,7 @@ func (c *Client) ListProjects(ctx context.Context, apiKey string) ([]Project, er
 
 // ListProjectIssues はプロジェクト配下のチケットを取得する（ページング）。
 // closed も含めて取得し、表示側で折りたたむ（Design.md §7.7）。
-func (c *Client) ListProjectIssues(ctx context.Context, apiKey string, projectID int) ([]Issue, error) {
+func (c *Client) ListProjectIssues(ctx context.Context, token string, projectID int) ([]Issue, error) {
 	var out []Issue
 	err := c.paginate(func(offset int) (int, int, error) {
 		var page struct {
@@ -336,7 +328,7 @@ func (c *Client) ListProjectIssues(ctx context.Context, apiKey string, projectID
 			"offset":     {strconv.Itoa(offset)},
 			"limit":      {strconv.Itoa(c.pageSize)},
 		}
-		if err := c.get(ctx, apiKey, "/issues.json", q, &page); err != nil {
+		if err := c.get(ctx, token, "/issues.json", q, &page); err != nil {
 			return 0, 0, err
 		}
 		out = append(out, page.Issues...)
@@ -351,7 +343,7 @@ func (c *Client) ListProjectIssues(ctx context.Context, apiKey string, projectID
 // CountOpenIssues はプロジェクト直下（サブプロジェクトを除く）の未完了チケット
 // 数を返す。件数だけが必要なので limit=1 として total_count のみを読む
 // （Design.md §7.6 のプロジェクト一覧右端の数字）。
-func (c *Client) CountOpenIssues(ctx context.Context, apiKey string, projectID int) (int, error) {
+func (c *Client) CountOpenIssues(ctx context.Context, token string, projectID int) (int, error) {
 	var page struct {
 		TotalCount int `json:"total_count"`
 	}
@@ -361,41 +353,41 @@ func (c *Client) CountOpenIssues(ctx context.Context, apiKey string, projectID i
 		"subproject_id": {"!*"}, // 各ノードの数字を独立させる（子の件数を重複計上しない）
 		"limit":         {"1"},
 	}
-	if err := c.get(ctx, apiKey, "/issues.json", q, &page); err != nil {
+	if err := c.get(ctx, token, "/issues.json", q, &page); err != nil {
 		return 0, err
 	}
 	return page.TotalCount, nil
 }
 
 // GetIssue はチケット本体を履歴・添付込みで取得する。
-func (c *Client) GetIssue(ctx context.Context, apiKey string, id int) (*Issue, error) {
+func (c *Client) GetIssue(ctx context.Context, token string, id int) (*Issue, error) {
 	var wrap struct {
 		Issue Issue `json:"issue"`
 	}
 	q := url.Values{"include": {"journals,attachments"}}
-	if err := c.get(ctx, apiKey, "/issues/"+strconv.Itoa(id)+".json", q, &wrap); err != nil {
+	if err := c.get(ctx, token, "/issues/"+strconv.Itoa(id)+".json", q, &wrap); err != nil {
 		return nil, err
 	}
 	return &wrap.Issue, nil
 }
 
 // ListTrackers はトラッカー一覧を返す。
-func (c *Client) ListTrackers(ctx context.Context, apiKey string) ([]Ref, error) {
+func (c *Client) ListTrackers(ctx context.Context, token string) ([]Ref, error) {
 	var wrap struct {
 		Trackers []Ref `json:"trackers"`
 	}
-	if err := c.get(ctx, apiKey, "/trackers.json", nil, &wrap); err != nil {
+	if err := c.get(ctx, token, "/trackers.json", nil, &wrap); err != nil {
 		return nil, err
 	}
 	return wrap.Trackers, nil
 }
 
 // ListStatuses はステータス一覧を返す（closed 判定込み）。
-func (c *Client) ListStatuses(ctx context.Context, apiKey string) ([]Status, error) {
+func (c *Client) ListStatuses(ctx context.Context, token string) ([]Status, error) {
 	var wrap struct {
 		Statuses []Status `json:"issue_statuses"`
 	}
-	if err := c.get(ctx, apiKey, "/issue_statuses.json", nil, &wrap); err != nil {
+	if err := c.get(ctx, token, "/issue_statuses.json", nil, &wrap); err != nil {
 		return nil, err
 	}
 	return wrap.Statuses, nil
@@ -406,11 +398,11 @@ func (c *Client) ListStatuses(ctx context.Context, apiKey string) ([]Status, err
 // 必要なエンドポイントのため、非管理者アカウントでは ErrUpstream（403）
 // になりうる——呼び出し側（httpapi）は定義なしの degrade 表示に切り替える
 // こと（Design.md §6.4）。
-func (c *Client) ListCustomFieldDefs(ctx context.Context, apiKey string) ([]CustomFieldDef, error) {
+func (c *Client) ListCustomFieldDefs(ctx context.Context, token string) ([]CustomFieldDef, error) {
 	var wrap struct {
 		CustomFields []CustomFieldDef `json:"custom_fields"`
 	}
-	if err := c.get(ctx, apiKey, "/custom_fields.json", nil, &wrap); err != nil {
+	if err := c.get(ctx, token, "/custom_fields.json", nil, &wrap); err != nil {
 		return nil, err
 	}
 	out := make([]CustomFieldDef, 0, len(wrap.CustomFields))
@@ -424,11 +416,11 @@ func (c *Client) ListCustomFieldDefs(ctx context.Context, apiKey string) ([]Cust
 
 // GetAttachment は添付ファイル 1 件の情報を返す
 // （`attachment`（ファイル）フォーマットのカスタムフィールド参照解決用）。
-func (c *Client) GetAttachment(ctx context.Context, apiKey string, id int) (*Attachment, error) {
+func (c *Client) GetAttachment(ctx context.Context, token string, id int) (*Attachment, error) {
 	var wrap struct {
 		Attachment Attachment `json:"attachment"`
 	}
-	if err := c.get(ctx, apiKey, "/attachments/"+strconv.Itoa(id)+".json", nil, &wrap); err != nil {
+	if err := c.get(ctx, token, "/attachments/"+strconv.Itoa(id)+".json", nil, &wrap); err != nil {
 		return nil, err
 	}
 	return &wrap.Attachment, nil
@@ -436,12 +428,12 @@ func (c *Client) GetAttachment(ctx context.Context, apiKey string, id int) (*Att
 
 // ListProjectVersions はプロジェクトのバージョン一覧を返す
 // （`version` フォーマットのカスタムフィールド参照解決用）。
-func (c *Client) ListProjectVersions(ctx context.Context, apiKey string, projectID int) ([]Version, error) {
+func (c *Client) ListProjectVersions(ctx context.Context, token string, projectID int) ([]Version, error) {
 	var wrap struct {
 		Versions []Version `json:"versions"`
 	}
 	path := "/projects/" + strconv.Itoa(projectID) + "/versions.json"
-	if err := c.get(ctx, apiKey, path, nil, &wrap); err != nil {
+	if err := c.get(ctx, token, path, nil, &wrap); err != nil {
 		return nil, err
 	}
 	return wrap.Versions, nil
@@ -449,23 +441,23 @@ func (c *Client) ListProjectVersions(ctx context.Context, apiKey string, project
 
 // ListProjectMemberships はプロジェクトのメンバー一覧を返す
 // （`user` フォーマットのカスタムフィールド参照解決用）。
-func (c *Client) ListProjectMemberships(ctx context.Context, apiKey string, projectID int) ([]Membership, error) {
+func (c *Client) ListProjectMemberships(ctx context.Context, token string, projectID int) ([]Membership, error) {
 	var wrap struct {
 		Memberships []Membership `json:"memberships"`
 	}
 	path := "/projects/" + strconv.Itoa(projectID) + "/memberships.json"
-	if err := c.get(ctx, apiKey, path, nil, &wrap); err != nil {
+	if err := c.get(ctx, token, path, nil, &wrap); err != nil {
 		return nil, err
 	}
 	return wrap.Memberships, nil
 }
 
 // ListPriorities は優先度一覧を返す。
-func (c *Client) ListPriorities(ctx context.Context, apiKey string) ([]Ref, error) {
+func (c *Client) ListPriorities(ctx context.Context, token string) ([]Ref, error) {
 	var wrap struct {
 		Priorities []Ref `json:"issue_priorities"`
 	}
-	if err := c.get(ctx, apiKey, "/enumerations/issue_priorities.json", nil, &wrap); err != nil {
+	if err := c.get(ctx, token, "/enumerations/issue_priorities.json", nil, &wrap); err != nil {
 		return nil, err
 	}
 	return wrap.Priorities, nil

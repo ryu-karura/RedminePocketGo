@@ -180,6 +180,15 @@ func (s *Store) SetOAuthTokenStatus(ctx context.Context, userID, status string) 
 	return nil
 }
 
+// DeleteOAuthTokens はトークンの組を削除する（Redmine 側で失効させた後など）。
+// 存在しなくてもエラーにしない。
+func (s *Store) DeleteOAuthTokens(ctx context.Context, userID string) error {
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM oauth_tokens WHERE user_id = ?", userID); err != nil {
+		return fmt.Errorf("store: OAuth トークン削除に失敗しました: %w", err)
+	}
+	return nil
+}
+
 // OAuthState は進行中の認可要求から取り出した状態（Design.md §5.4）。
 type OAuthState struct {
 	VerifierCiphertext []byte

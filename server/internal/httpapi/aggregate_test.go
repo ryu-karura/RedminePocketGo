@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/ryu-karura/RedminePocketGo/server/internal/credential"
 	"github.com/ryu-karura/RedminePocketGo/server/internal/redmine"
 )
 
@@ -91,23 +92,23 @@ func (f *fakeAggregator) GetAttachment(_ context.Context, _ string, id int) (*re
 	return &att, f.err
 }
 
+// fakeKeyLoader は CredentialGate のテスト実装（名前は既存テストとの差分を
+// 小さくするために残している）。key は使わない。
 type fakeKeyLoader struct {
 	key         string
-	err         error
+	err         error  // Ensure が返すエラー
 	markedValid string // MarkInvalid が呼ばれた userID
 }
 
-func (f *fakeKeyLoader) APIKeyValue(context.Context, string) (string, error) {
-	return f.key, f.err
-}
+func (f *fakeKeyLoader) Ensure(context.Context, string) error { return f.err }
 func (f *fakeKeyLoader) MarkInvalid(_ context.Context, userID string) error {
 	f.markedValid = userID
 	return nil
 }
 
-func newAggMux(agg Aggregator, keys KeyProvider) *http.ServeMux {
+func newAggMux(agg Aggregator, keys CredentialGate) *http.ServeMux {
 	mux := http.NewServeMux()
-	(&AggregateHandler{Redmine: agg, Keys: keys, Cache: NewAggCache()}).RegisterRoutes(mux)
+	(&AggregateHandler{Redmine: agg, Gate: keys, Cache: NewAggCache()}).RegisterRoutes(mux)
 	return mux
 }
 
@@ -116,7 +117,7 @@ func TestProjectsTree(t *testing.T) {
 		{ID: 1, Name: "root"},
 		{ID: 2, Name: "child", Parent: &redmine.Ref{ID: 1}},
 	}}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 
 	t.Run("unauthenticated", func(t *testing.T) {
 		rec := httptest.NewRecorder()
@@ -146,7 +147,7 @@ func TestProjectsTreeIncludesOpenCounts(t *testing.T) {
 		},
 		openCounts: map[int]int{1: 12, 2: 5},
 	}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
 	if rec.Code != 200 {
@@ -168,7 +169,7 @@ func TestProjectsTreeOpenCountCancellationNotCached(t *testing.T) {
 		projects: []redmine.Project{{ID: 1, Name: "p"}},
 		countErr: context.Canceled,
 	}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
@@ -188,7 +189,7 @@ func TestProjectsTreeOpenCountCancellationNotCached(t *testing.T) {
 
 func TestProjectsTreeCachedPerUser(t *testing.T) {
 	agg := &fakeAggregator{projects: []redmine.Project{{ID: 1, Name: "p"}}}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 
 	call := func(userID string) {
 		req := httptest.NewRequest("GET", "/api/projects/tree", nil)
@@ -213,7 +214,7 @@ func TestIssuesTree(t *testing.T) {
 			ID int `json:"id"`
 		}{ID: 10}},
 	}}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/5/issues/tree", nil)))
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"children"`) {
@@ -223,7 +224,7 @@ func TestIssuesTree(t *testing.T) {
 
 func TestIssueDetail(t *testing.T) {
 	agg := &fakeAggregator{issue: &redmine.Issue{ID: 42, Subject: "detail"}}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"detail"`) {
@@ -240,7 +241,7 @@ func TestIssueDetailMergesCustomFieldDefs(t *testing.T) {
 			PossibleValues: []redmine.PossibleValue{{Value: "a", Label: "重要"}},
 		}},
 	}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
 	if rec.Code != 200 {
@@ -262,7 +263,7 @@ func TestIssueDetailDegradesWhenCustomFieldDefsUnavailable(t *testing.T) {
 			CustomFields: []redmine.CustomFieldValue{{ID: 3, Name: "備考", Value: "メモ"}}},
 		customFieldsErr: redmine.ErrUpstream,
 	}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
 	if rec.Code != 200 {
@@ -285,7 +286,7 @@ func TestIssueDetailCustomFieldDefsUnauthorizedIs409(t *testing.T) {
 		issue:           &redmine.Issue{ID: 42, Project: redmine.Ref{ID: 5}},
 		customFieldsErr: redmine.ErrUnauthorized,
 	}
-	keys := &fakeKeyLoader{key: "k"}
+	keys := &fakeKeyLoader{}
 	mux := newAggMux(agg, keys)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
@@ -304,7 +305,7 @@ func TestMetaCustomFieldDefsUnauthorizedIs409(t *testing.T) {
 		priorities:      []redmine.Ref{{ID: 2, Name: "Normal"}},
 		customFieldsErr: redmine.ErrUnauthorized,
 	}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/meta", nil)))
 	if rec.Code != 409 {
@@ -329,7 +330,7 @@ func TestIssueDetailResolvesVersionUserAndAttachment(t *testing.T) {
 		memberships: []redmine.Membership{{ID: 1, User: &redmine.Ref{ID: 7, Name: "Alice"}}},
 		attachments: map[int]redmine.Attachment{9: {ID: 9, Filename: "spec.pdf", Filesize: 2048}},
 	}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
 	if rec.Code != 200 {
@@ -350,7 +351,7 @@ func TestIssueDetailReferenceLookupUnauthorizedIs409(t *testing.T) {
 		customFieldDefs: []redmine.CustomFieldDef{{ID: 1, FieldFormat: "version"}},
 		versionsErr:     redmine.ErrUnauthorized,
 	}
-	keys := &fakeKeyLoader{key: "k"}
+	keys := &fakeKeyLoader{}
 	mux := newAggMux(agg, keys)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
@@ -366,7 +367,7 @@ func TestIssueDetailMembershipLookupUnauthorizedIs409(t *testing.T) {
 		customFieldDefs: []redmine.CustomFieldDef{{ID: 2, FieldFormat: "user"}},
 		membershipsErr:  redmine.ErrUnauthorized,
 	}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
 	if rec.Code != 409 {
@@ -381,7 +382,7 @@ func TestIssueDetailAttachmentLookupUnauthorizedIs409(t *testing.T) {
 		customFieldDefs: []redmine.CustomFieldDef{{ID: 4, FieldFormat: "attachment"}},
 		attachmentErr:   redmine.ErrUnauthorized,
 	}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
 	if rec.Code != 409 {
@@ -397,7 +398,7 @@ func TestIssueDetailReferenceLookupOtherErrorDegrades(t *testing.T) {
 		customFieldDefs: []redmine.CustomFieldDef{{ID: 1, FieldFormat: "version"}},
 		versionsErr:     redmine.ErrUpstream,
 	}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/issues/42/detail", nil)))
 	if rec.Code != 200 {
@@ -415,7 +416,7 @@ func TestMetaIncludesCustomFieldDefs(t *testing.T) {
 		priorities:      []redmine.Ref{{ID: 2, Name: "Normal"}},
 		customFieldDefs: []redmine.CustomFieldDef{{ID: 1, Name: "優先タグ", FieldFormat: "list"}},
 	}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/meta", nil)))
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "優先タグ") {
@@ -431,7 +432,7 @@ func TestMetaDegradesWhenCustomFieldDefsUnavailable(t *testing.T) {
 		priorities:      []redmine.Ref{{ID: 2, Name: "Normal"}},
 		customFieldsErr: redmine.ErrUpstream,
 	}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/meta", nil)))
 	if rec.Code != 200 {
@@ -454,7 +455,7 @@ func TestMetaConcurrentRequestsDoNotCorruptCachedMap(t *testing.T) {
 		priorities:      []redmine.Ref{{ID: 2, Name: "Normal"}},
 		customFieldDefs: []redmine.CustomFieldDef{{ID: 1, Name: "優先タグ", FieldFormat: "list"}},
 	}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 
 	const n = 32
 	var wg sync.WaitGroup
@@ -478,7 +479,7 @@ func TestMeta(t *testing.T) {
 		statuses:   []redmine.Status{{ID: 1, Name: "New"}},
 		priorities: []redmine.Ref{{ID: 2, Name: "Normal"}},
 	}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/meta", nil)))
 	if rec.Code != 200 {
@@ -493,7 +494,7 @@ func TestMeta(t *testing.T) {
 
 func TestAggregateUpstreamErrorMaps(t *testing.T) {
 	agg := &fakeAggregator{err: redmine.ErrUnauthorized}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
 	if rec.Code != 409 || !strings.Contains(rec.Body.String(), CodeRedmineCredentialInvalid) {
@@ -503,7 +504,7 @@ func TestAggregateUpstreamErrorMaps(t *testing.T) {
 
 func TestAggregateNoKeyIs409(t *testing.T) {
 	agg := &fakeAggregator{}
-	mux := newAggMux(agg, &fakeKeyLoader{err: ErrNoRedmineKey})
+	mux := newAggMux(agg, &fakeKeyLoader{err: credential.ErrNoCredential})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
 	if rec.Code != 409 {
@@ -513,7 +514,7 @@ func TestAggregateNoKeyIs409(t *testing.T) {
 
 func TestCacheConcurrentSameKeyGeneratesOnce(t *testing.T) {
 	agg := &fakeAggregator{projects: []redmine.Project{{ID: 1, Name: "p"}}}
-	mux := newAggMux(agg, &fakeKeyLoader{key: "k"})
+	mux := newAggMux(agg, &fakeKeyLoader{})
 
 	const n = 16
 	done := make(chan struct{}, n)
@@ -536,7 +537,7 @@ func TestCacheConcurrentSameKeyGeneratesOnce(t *testing.T) {
 
 func TestAggregate401MarksCredentialInvalid(t *testing.T) {
 	agg := &fakeAggregator{err: redmine.ErrUnauthorized}
-	keys := &fakeKeyLoader{key: "k"}
+	keys := &fakeKeyLoader{}
 	mux := newAggMux(agg, keys)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
@@ -556,5 +557,57 @@ func TestAggregateTransientKeyErrorIs500(t *testing.T) {
 	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
 	if rec.Code != 500 || !strings.Contains(rec.Body.String(), CodeInternalError) {
 		t.Errorf("transient key error: status = %d body = %s; want 500", rec.Code, rec.Body)
+	}
+}
+
+func TestAggregateReauthErrorsAreMappedTo409(t *testing.T) {
+	// 連携が使えない状態（未連携・無効化済み）は、キャッシュ命中の有無に関わらず
+	// 毎回 409 で検出される。再認可で直るため 500 にしてはならない。
+	for name, err := range map[string]error{
+		"not linked": credential.ErrNoCredential,
+		"invalid":    credential.ErrCredentialInvalid,
+	} {
+		t.Run(name, func(t *testing.T) {
+			agg := &fakeAggregator{projects: []redmine.Project{{ID: 1, Name: "root"}}}
+			mux := newAggMux(agg, &fakeKeyLoader{err: err})
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
+			if rec.Code != 409 || !strings.Contains(rec.Body.String(), CodeRedmineCredentialInvalid) {
+				t.Errorf("status = %d body = %s; want 409 redmine_credential_invalid", rec.Code, rec.Body)
+			}
+			if agg.calls.Load() != 0 {
+				t.Error("upstream called although the credential is unusable")
+			}
+		})
+	}
+}
+
+func TestAggregateGateRunsEvenOnCacheHit(t *testing.T) {
+	agg := &fakeAggregator{projects: []redmine.Project{{ID: 1, Name: "root"}}}
+	gate := &fakeKeyLoader{}
+	mux := newAggMux(agg, gate)
+	get := func() int {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/projects/tree", nil)))
+		return rec.Code
+	}
+	if get() != 200 {
+		t.Fatal("first request failed")
+	}
+	// 無効化された後は、60 秒キャッシュに残っていても配信しない。
+	gate.err = credential.ErrCredentialInvalid
+	if code := get(); code != 409 {
+		t.Errorf("after invalidation: status = %d; want 409 (cached data must not be served)", code)
+	}
+}
+
+func TestAggregateUpstreamUnauthorizedInvalidatesAndAsksReauth(t *testing.T) {
+	agg := &fakeAggregator{err: redmine.ErrUnauthorized}
+	gate := &fakeKeyLoader{}
+	mux := newAggMux(agg, gate)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedCtx(httptest.NewRequest("GET", "/api/meta", nil)))
+	if rec.Code != 409 || gate.markedValid == "" {
+		t.Errorf("status = %d, markedValid = %q; want 409 and the grant invalidated", rec.Code, gate.markedValid)
 	}
 }

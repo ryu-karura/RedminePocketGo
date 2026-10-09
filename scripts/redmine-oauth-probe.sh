@@ -353,13 +353,13 @@ done
 # --- ② エンドポイント ---------------------------------------------------------
 
 log "[5/6] FULL スコープのトークンで各 REST API を呼びます"
-record "② /users/current.json の応答キー" "$(api "${ACCESS}" GET /users/current.json >/dev/null; jq -c '.user | {id, login, admin: (.admin // null)} + {has_api_key: (.api_key != null)}' "${WORK}/api.out" 2>/dev/null || echo '解析不可')"
+record "② /users/current.json の応答キー" "$(api "${ACCESS}" GET /users/current.json >/dev/null; jq -c '.user | {id, login, admin: (.admin // null)}' "${WORK}/api.out" 2>/dev/null || echo '解析不可')"
 for path in \
   "/projects.json" "/projects/${PROJECT_ID}.json" "/issues.json?project_id=${PROJECT_ID}" \
   "/issues/${ISSUE_ID}.json?include=journals,attachments,children" "/issue_statuses.json" \
   "/trackers.json" "/enumerations/issue_priorities.json" \
   "/projects/${PROJECT_ID}/memberships.json" "/projects/${PROJECT_ID}/versions.json" \
-  "/custom_fields.json" "/my/account.json"; do
+  "/custom_fields.json"; do
   record "② GET ${path%%\?*}（FULL）" "HTTP $(api "${ACCESS}" GET "${path}")"
 done
 

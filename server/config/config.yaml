@@ -23,18 +23,9 @@ session:
   cookieName: "rmapp_session"
   secretFile: "../secrets/session_key.txt"  # 必須。scripts/generate-secrets.sh が生成
 
-# ---- パスキー（WebAuthn）----
-webauthn:
-  rpId: "localhost"          # 必須。公開ドメイン名のみ（スキーム・ポート不可）。運用開始後は変更不可
-  rpName: "RedminePocketGo"  # 必須。認証時に端末が表示する名称
-  origins:                   # 必須。許可するオリジン（スキーム・ポート込み）
-    - "http://localhost:8090"
-  userVerification: "required"  # required / preferred / discouraged
-  challengeTTLMinutes: 5
-
-# ---- 暗号化（API キー保管庫）----
+# ---- 暗号化（OAuth トークン保管庫）----
 crypto:
-  kekFile: "../secrets/kek.txt"  # 必須。失うと保存済み API キーは復号不能
+  kekFile: "../secrets/kek.txt"  # 必須。失うと保存済みトークンは復号不能（全員が再ログインすれば復旧）
   keyVersion: 1                     # 鍵ローテーションの世代
 
 # ---- Redmine 接続 ----
@@ -73,4 +64,3 @@ database:
 features:
   mapEnabled: false        # 地図機能（将来。指示があるまで false）
   issueCreate: true        # チケット作成の可否
-  passwordBootstrap: true  # Redmine 認証での初回紐付け

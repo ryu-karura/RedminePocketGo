@@ -23,7 +23,6 @@ type Config struct {
 	LogLevel    string `yaml:"logLevel"`
 
 	Session  Session  `yaml:"session"`
-	WebAuthn WebAuthn `yaml:"webauthn"`
 	Crypto   Crypto   `yaml:"crypto"`
 	Redmine  Redmine  `yaml:"redmine"`
 	Database Database `yaml:"database"`
@@ -36,14 +35,6 @@ type Session struct {
 	SecureCookie         bool   `yaml:"secureCookie"`
 	CookieName           string `yaml:"cookieName"`
 	SecretFile           string `yaml:"secretFile"`
-}
-
-type WebAuthn struct {
-	RPID                string   `yaml:"rpId"`
-	RPName              string   `yaml:"rpName"`
-	Origins             []string `yaml:"origins"`
-	UserVerification    string   `yaml:"userVerification"`
-	ChallengeTTLMinutes int      `yaml:"challengeTTLMinutes"`
 }
 
 type Crypto struct {
@@ -102,9 +93,8 @@ type Database struct {
 }
 
 type Features struct {
-	MapEnabled        bool `yaml:"mapEnabled"`
-	IssueCreate       bool `yaml:"issueCreate"`
-	PasswordBootstrap bool `yaml:"passwordBootstrap"`
+	MapEnabled  bool `yaml:"mapEnabled"`
+	IssueCreate bool `yaml:"issueCreate"`
 }
 
 // EnvPrefix は環境変数によるオーバーライドの接頭辞。
@@ -133,15 +123,6 @@ var setters = map[string]func(*Config, string) error{
 	"session.cookieName":           func(c *Config, v string) error { c.Session.CookieName = v; return nil },
 	"session.secretFile":           func(c *Config, v string) error { c.Session.SecretFile = v; return nil },
 
-	"webauthn.rpId":   func(c *Config, v string) error { c.WebAuthn.RPID = v; return nil },
-	"webauthn.rpName": func(c *Config, v string) error { c.WebAuthn.RPName = v; return nil },
-	"webauthn.origins": func(c *Config, v string) error {
-		c.WebAuthn.Origins = splitList(v)
-		return nil
-	},
-	"webauthn.userVerification":    func(c *Config, v string) error { c.WebAuthn.UserVerification = v; return nil },
-	"webauthn.challengeTTLMinutes": func(c *Config, v string) error { return setInt(&c.WebAuthn.ChallengeTTLMinutes, v) },
-
 	"crypto.kekFile":    func(c *Config, v string) error { c.Crypto.KEKFile = v; return nil },
 	"crypto.keyVersion": func(c *Config, v string) error { return setInt(&c.Crypto.KeyVersion, v) },
 
@@ -165,9 +146,8 @@ var setters = map[string]func(*Config, string) error{
 
 	"database.dsn": func(c *Config, v string) error { c.Database.DSN = v; return nil },
 
-	"features.mapEnabled":        func(c *Config, v string) error { return setBool(&c.Features.MapEnabled, v) },
-	"features.issueCreate":       func(c *Config, v string) error { return setBool(&c.Features.IssueCreate, v) },
-	"features.passwordBootstrap": func(c *Config, v string) error { return setBool(&c.Features.PasswordBootstrap, v) },
+	"features.mapEnabled":  func(c *Config, v string) error { return setBool(&c.Features.MapEnabled, v) },
+	"features.issueCreate": func(c *Config, v string) error { return setBool(&c.Features.IssueCreate, v) },
 }
 
 // Load は path の YAML を読み込み、環境変数とオーバーライド（フラグ由来）を
@@ -228,10 +208,6 @@ func defaults() *Config {
 			SecureCookie:         true,
 			CookieName:           "rmapp_session",
 		},
-		WebAuthn: WebAuthn{
-			UserVerification:    "required",
-			ChallengeTTLMinutes: 5,
-		},
 		Crypto: Crypto{KeyVersion: 1},
 		Redmine: Redmine{
 			SubURI:         "/redmine",
@@ -245,8 +221,7 @@ func defaults() *Config {
 			},
 		},
 		Features: Features{
-			IssueCreate:       true,
-			PasswordBootstrap: true,
+			IssueCreate: true,
 		},
 	}
 }
@@ -257,9 +232,6 @@ func (c *Config) validate() error {
 		empty bool
 	}{
 		{"session.secretFile", c.Session.SecretFile == ""},
-		{"webauthn.rpId", c.WebAuthn.RPID == ""},
-		{"webauthn.rpName", c.WebAuthn.RPName == ""},
-		{"webauthn.origins", len(c.WebAuthn.Origins) == 0},
 		{"crypto.kekFile", c.Crypto.KEKFile == ""},
 		{"redmine.baseURL", c.Redmine.BaseURL == ""},
 		{"redmine.oauth.clientId", c.Redmine.OAuth.ClientID == ""},
@@ -282,12 +254,6 @@ func (c *Config) validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("config: logLevel %q は不正です（debug / info / warn / error）", c.LogLevel)
-	}
-
-	switch c.WebAuthn.UserVerification {
-	case "required", "preferred", "discouraged":
-	default:
-		return fmt.Errorf("config: webauthn.userVerification %q は不正です（required / preferred / discouraged）", c.WebAuthn.UserVerification)
 	}
 
 	if u, err := url.Parse(c.Redmine.BaseURL); err != nil || u.Scheme == "" || u.Host == "" {
@@ -321,7 +287,6 @@ func (c *Config) validate() error {
 	}{
 		{"session.idleTimeoutHours", c.Session.IdleTimeoutHours},
 		{"session.absoluteTimeoutHours", c.Session.AbsoluteTimeoutHours},
-		{"webauthn.challengeTTLMinutes", c.WebAuthn.ChallengeTTLMinutes},
 		{"crypto.keyVersion", c.Crypto.KeyVersion},
 		{"redmine.timeoutSeconds", c.Redmine.TimeoutSeconds},
 		{"redmine.maxConcurrency", c.Redmine.MaxConcurrency},

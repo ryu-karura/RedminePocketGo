@@ -1,11 +1,9 @@
-// settings.js — 設定画面（Design.md §7.9）。端末（パスキー）の一覧・削除、
-// 登録コードの発行、Redmine 連携の状態表示と再紐付け、ログアウト。
-// テーマ切替はトップバー（common/shell.js）側にあるためここでは扱わない。
+// settings.js — 設定画面（Design.md §7.9）。Redmine 連携の状態・付与スコープ・
+// 最終更新、再認可、ログアウト。テーマ切替はトップバー（common/shell.js）側。
 
-import {
-  apiGetJson, apiPostJson, apiDeleteJson, ApiError,
-} from '../common/api.js';
-import { deviceLabel, deviceKindLabel, redmineStatusInfo } from '../common/settingsfmt.js';
+import { apiGetJson, ApiError } from '../common/api.js';
+import { redmineStatusInfo, needsReauthorization, scopesSummary } from '../common/settingsfmt.js';
+import { startReauthorize } from '../common/reauth.js';
 import { escapeHtml, errorMessage, formatDateTime } from '../common/utils.js';
 import { toast } from '../common/shell.js';
 
@@ -13,16 +11,9 @@ export async function initSettings(section) {
   const body = section.querySelector('#settingsBody');
   if (!body) return;
 
-  let devices = [];
-  let me = { redmineLogin: '', redmineStatus: 'unlinked' };
-  let confirmDeleteId = null; // 削除確認中の端末 id（インライン確認。1 件のみ）
-  let relinkOpen = false;
-  let relinkError = '';
-  let enrollment = null; // { code, expiresAt } | null
-
   function showLoading() {
     body.innerHTML = '<div class="skeleton-list" aria-hidden="true">'
-      + Array.from({ length: 4 }, () => '<div class="skeleton skeleton-row"></div>').join('')
+      + Array.from({ length: 3 }, () => '<div class="skeleton skeleton-row"></div>').join('')
       + '</div>';
   }
 
@@ -37,21 +28,16 @@ export async function initSettings(section) {
   async function load() {
     showLoading();
     try {
-      const [devRes, meRes] = await Promise.all([
-        apiGetJson('/api/devices'),
-        apiGetJson('/api/auth/me'),
-      ]);
-      devices = (devRes && devRes.devices) || [];
-      me = meRes || me;
-      confirmDeleteId = null;
-      render();
+      render(await apiGetJson('/api/auth/me'));
     } catch (e) {
       showError(messageFor(e));
     }
   }
 
-  function render() {
+  function render(me) {
     const st = redmineStatusInfo(me.redmineStatus);
+    const scopes = scopesSummary(me.redmineScopes);
+    const reauth = needsReauthorization(me.redmineStatus);
     body.innerHTML = `
       <section class="settings-section">
         <h2>Redmine 連携</h2>
@@ -59,133 +45,35 @@ export async function initSettings(section) {
           <span class="badge redmine-${st.kind}">${escapeHtml(st.label)}</span>
           <span class="muted">${escapeHtml(me.redmineLogin || '')}</span>
         </p>
-        <button type="button" class="btn-link" id="relinkToggle">認証情報を再入力</button>
-        ${relinkOpen ? relinkFormHtml() : ''}
-      </section>
-
-      <section class="settings-section">
-        <h2>端末</h2>
-        ${devices.length === 0
-          ? '<p class="state-empty">登録済みの端末がありません。</p>'
-          : `<ul class="device-list">${devices.map(deviceRowHtml).join('')}</ul>`}
-        <button type="button" class="btn-link" id="enrollIssue">新しい端末を追加</button>
-        ${enrollment ? enrollmentHtml() : ''}
+        ${me.redmineRefreshedAt
+          ? `<p class="muted">最終更新: <time>${escapeHtml(formatDateTime(me.redmineRefreshedAt))}</time></p>`
+          : ''}
+        ${scopes.length
+          ? `<p class="muted">許可している操作（Redmine の権限）:</p>
+             <ul class="scope-list">${scopes.map((s) => `<li><code>${escapeHtml(s)}</code></li>`).join('')}</ul>`
+          : ''}
+        <button type="button" class="${reauth ? 'btn-primary' : 'btn-link'}" id="reauthBtn">Redmine で再認可</button>
+        <div id="reauthError" class="inline-error" role="alert"></div>
+        <p class="muted">許可の取り消しは Redmine の「マイアカウント」からも行えます。</p>
       </section>
 
       <section class="settings-section">
         <button type="button" class="btn-primary" id="settingsLogout">ログアウト</button>
       </section>`;
 
-    wire();
-  }
-
-  function deviceRowHtml(d) {
-    const confirming = confirmDeleteId === d.id;
-    return `<li class="device-row" data-id="${escapeHtml(d.id)}">
-      <div class="device-row__info">
-        <div class="device-row__label">${escapeHtml(deviceLabel(d))}</div>
-        <div class="device-row__meta muted">
-          ${escapeHtml(deviceKindLabel(d))} ・
-          登録: ${escapeHtml(formatDateTime(d.createdAt))} ・
-          最終利用: ${d.lastUsedAt ? escapeHtml(formatDateTime(d.lastUsedAt)) : '—'}
-        </div>
-      </div>
-      ${confirming
-        ? `<span class="device-row__confirm">
-             本当に削除しますか？
-             <button type="button" class="btn-link device-delete-yes" data-id="${escapeHtml(d.id)}">はい</button>
-             <button type="button" class="btn-link device-delete-no">いいえ</button>
-           </span>`
-        : `<button type="button" class="btn-link device-delete" data-id="${escapeHtml(d.id)}" aria-label="削除">削除</button>`}
-    </li>`;
-  }
-
-  function relinkFormHtml() {
-    return `<form id="relinkForm" class="relink-form">
-      ${relinkError ? `<div class="inline-error" role="alert">${escapeHtml(relinkError)}</div>` : ''}
-      <label class="form-field">
-        <span>Redmine ログイン ID</span>
-        <input id="relinkLogin" type="text" autocomplete="username" required>
-      </label>
-      <label class="form-field">
-        <span>パスワード</span>
-        <input id="relinkPassword" type="password" autocomplete="current-password" required>
-      </label>
-      <button type="submit" class="btn-primary" id="relinkSubmit">再連携する</button>
-    </form>`;
-  }
-
-  function enrollmentHtml() {
-    return `<div class="enrollment-code" role="status">
-      <p>新しい端末で下のコードを入力してください（<time>${escapeHtml(formatDateTime(enrollment.expiresAt))}</time> まで有効）。</p>
-      <p class="enrollment-code__value">${escapeHtml(enrollment.code)}</p>
-    </div>`;
-  }
-
-  function wire() {
-    body.querySelector('#relinkToggle').addEventListener('click', () => {
-      relinkOpen = !relinkOpen;
-      relinkError = '';
-      render();
-    });
-
-    const relinkForm = body.querySelector('#relinkForm');
-    if (relinkForm) {
-      relinkForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const login = body.querySelector('#relinkLogin').value;
-        const password = body.querySelector('#relinkPassword').value;
-        try {
-          await apiPostJson('/api/auth/relink', { login, password });
-          toast('Redmine と再連携しました', 'ok');
-          relinkOpen = false;
-          relinkError = '';
-          await load();
-        } catch (err) {
-          relinkError = messageFor(err);
-          render();
-        }
-      });
-    }
-
-    body.querySelector('#enrollIssue').addEventListener('click', async () => {
+    body.querySelector('#reauthBtn').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const errBox = body.querySelector('#reauthError');
+      errBox.textContent = '';
+      btn.disabled = true;
       try {
-        enrollment = await apiPostJson('/api/auth/enrollment-code');
-        render();
+        await startReauthorize('#settings');
       } catch (err) {
-        toast(messageFor(err), 'crit');
+        btn.disabled = false;
+        errBox.textContent = messageFor(err);
+        toast('再認可を開始できませんでした', 'crit');
       }
     });
-
-    for (const btn of body.querySelectorAll('.device-delete')) {
-      btn.addEventListener('click', () => {
-        confirmDeleteId = btn.dataset.id;
-        render();
-      });
-    }
-    const cancelBtn = body.querySelector('.device-delete-no');
-    if (cancelBtn) {
-      cancelBtn.addEventListener('click', () => {
-        confirmDeleteId = null;
-        render();
-      });
-    }
-    const yesBtn = body.querySelector('.device-delete-yes');
-    if (yesBtn) {
-      yesBtn.addEventListener('click', async () => {
-        const id = yesBtn.dataset.id;
-        try {
-          await apiDeleteJson(`/api/devices/${encodeURIComponent(id)}`);
-          toast('端末を削除しました', 'ok');
-          await load();
-        } catch (err) {
-          toast(messageFor(err), 'crit');
-          confirmDeleteId = null;
-          render();
-        }
-      });
-    }
-
     body.querySelector('#settingsLogout').addEventListener('click', () => {
       if (window.rmappLogout) window.rmappLogout();
     });

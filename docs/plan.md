@@ -329,27 +329,34 @@ CI 経由で初めて顕在化し、修正した（サンドボックスでは D
       ログイン CSRF 対策として state を発行元ブラウザの Cookie にも束縛し、
       一致しなければ state を消費する前に拒否する。旧経路と並存する形で
       `main` に配線済み（切り替えタスクまで旧経路も有効）
-- [ ] `internal/proxy` / `internal/httpapi/aggregate`: `Authorization: Bearer`
+- [x] `internal/proxy` / `internal/httpapi/aggregate`: `Authorization: Bearer`
       付与、`X-Redmine-API-Key` 受信 400 を維持し送信は一切しない、上流 401 は
       リフレッシュして 1 回だけ再試行、失敗で 409
       `redmine_credential_invalid`、リフレッシュ一時障害は 502
-- [ ] `POST /api/auth/logout`（`/oauth/revoke` をベストエフォート）、
+      （実装済み: proxy は `TokenSource` + 401 で更新して 1 回だけ再試行、本文は
+      再送のためメモリ保持（上限 4MiB）。集約は `credential.Authed` が利用者 ID を
+      受けてトークン取得・更新・再試行を担い、ハンドラはトークンを扱わない）
+- [x] `POST /api/auth/logout`（`/oauth/revoke` をベストエフォート）、
       `GET /api/auth/me`（連携状態・付与スコープ・最終リフレッシュ）、
       `POST /api/auth/reauthorize`
-- [ ] WebAuthn 一式の削除（マイグレーション 0003 で `credentials` /
+      （ログアウトは他の端末のセッションが残っていなければ失効。Design.md §3.3）
+- [x] WebAuthn 一式の削除（マイグレーション 0003 で `credentials` /
       `redmine_credentials` / `enrollment_codes` / `webauthn_challenges` /
       `users.webauthn_user_handle` / `sessions.credential_id` を削除、`config` の `webauthn.*` / `features.passwordBootstrap`
       キー・構造体・雛形・テストを含む）: `auth/webauthn.go`・`enroll.go`・`bootstrap.go`、
       `httpapi/devices.go` と登録/ログイン/端末系ルート、`go-webauthn`
       依存（`go mod tidy`）、関連テスト、`/my/account.json` への呼び出し
-- [ ] フロント: `login` 画面を「Redmine でログイン」（ページ遷移）と
+      （0003 は `secure_delete` で旧 API キー暗号文を空きページにも残さない）
+- [x] フロント: `login` 画面を「Redmine でログイン」（ページ遷移）と
       `error` クエリ表示に置換、`js/common/auth.js`（WebAuthn）と
       そのテストを削除、`settings` 画面を連携状態・スコープ・再認可・
       ログアウトに置換、`redmine_credential_invalid` の再認可導線、
       `app.js` のエラーコード処理
-- [ ] `server/e2e/`: CDP 仮想認証器を廃止し、擬似 Redmine に OAuth 提供側
+- [x] `server/e2e/`: CDP 仮想認証器を廃止し、擬似 Redmine に OAuth 提供側
       （authorize / token / revoke / `users/current`）を実装。ログイン →
       各画面 → `redmine_credential_invalid` → 再認可 → 復旧を実機検証
+      （擬似 Redmine は PKCE・コード 1 回限り・リフレッシュ回転を再現。API キーの
+      ヘッダーを受け取ったらテストを失敗させる）
 - [ ] 運用スクリプト・CI: `scripts/redmine-seed-testdata.sh` と
       `scripts/test-stack.sh`（`server/stacktest`）から管理者 API キーの利用を
       除去し、`rails runner` で OAuth アプリケーションとアクセストークンを
@@ -420,3 +427,4 @@ scripts/*.sh` 通過、`stack-test.yml` が実 RedmineDocker（7.0.2）で緑。
 | 2026-10-09 | フェーズ 10 の config タスクから `webauthn.*` / `features.passwordBootstrap` の削除を分離し、「WebAuthn 一式の削除」タスクへ移動 | これらのキーは `internal/auth` と `cmd/rmapp` がまだ参照しており、先に消すとビルドが壊れる（コミット毎に全スイート緑という運用規則に反する）。OAuth キーの追加（先行して必須化）と、利用側の削除は別コミットにする |
 | 2026-10-09 | フェーズ 10 の store タスクから旧テーブル・旧カラムの削除を分離し、「WebAuthn 一式の削除」タスク（マイグレーション 0003）へ移動 | 旧テーブルは `internal/auth` / `internal/credential` / `internal/store` の既存実装がまだ使っており、先に消すとコミット毎に全スイート緑を保てない。0002 は追加と `users` の作り直し（`webauthn_user_handle` の NULL 許容化。OAuth の利用者は持たないため）に限定した |
 | 2026-10-09 | フェーズ 10 のタスク「`internal/proxy` / `aggregate` の Bearer 化」「WebAuthn 一式の削除」「フロント」「`server/e2e/` 作り直し」を、不可分の「切り替え」としてまとめて 1 つの変更で行う方針にした（タスクの行は残し、同じコミットで一緒にチェックする）。追加のみで済むタスク（credential の OAuth 保管庫、auth のログイン／コールバック、logout / me / reauthorize）は、旧経路と並存させて先に実装する | 既存クライアントのヘッダーを Bearer に切り替えると、旧経路（パスキー + API キー）に依存する E2E の擬似 Redmine（`X-Redmine-Api-Key` を検査）や集約・中継のテストが同時に赤になる。E2E はフロントのログイン画面を駆動するため、サーバー・フロント・E2E は個別のコミットでは全スイート緑を保てない。implement スキルの「不可分なら束ねてよい（コミット本文に明記）」に従う |
+| 2026-10-09 | フェーズ 10 の「切り替え」（proxy/aggregate の Bearer 化、logout/me/reauthorize、WebAuthn 一式の削除、フロント、`server/e2e/` の作り直し）を 1 つの変更として完了 | 上記の方針（変更履歴 2026-10-09「不可分の切り替え」）どおり。旧経路との並存は終了し、`webauthn.*` / `features.passwordBootstrap` の設定キーは unknown キーとして起動を止める。実装中に LESSONS #7〜#9 を追記（OAuth リダイレクトを跨ぐ e2e の待機、上流を呼ばない画面での検出、テーブル作り直しの外部キー） |

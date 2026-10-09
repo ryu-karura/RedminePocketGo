@@ -11,11 +11,6 @@ import (
 const validYAML = `
 session:
   secretFile: /tmp/session_key.txt
-webauthn:
-  rpId: example.com
-  rpName: RedminePocketGo
-  origins:
-    - https://example.com
 crypto:
   kekFile: /tmp/kek.txt
 redmine:
@@ -60,8 +55,6 @@ func TestLoadDefaults(t *testing.T) {
 		{"session.absoluteTimeoutHours", cfg.Session.AbsoluteTimeoutHours, 720},
 		{"session.secureCookie", cfg.Session.SecureCookie, true},
 		{"session.cookieName", cfg.Session.CookieName, "rmapp_session"},
-		{"webauthn.userVerification", cfg.WebAuthn.UserVerification, "required"},
-		{"webauthn.challengeTTLMinutes", cfg.WebAuthn.ChallengeTTLMinutes, 5},
 		{"crypto.keyVersion", cfg.Crypto.KeyVersion, 1},
 		{"redmine.subURI", cfg.Redmine.SubURI, "/redmine"},
 		{"redmine.timeoutSeconds", cfg.Redmine.TimeoutSeconds, 10},
@@ -70,7 +63,6 @@ func TestLoadDefaults(t *testing.T) {
 		{"redmine.pageSize", cfg.Redmine.PageSize, 100},
 		{"features.mapEnabled", cfg.Features.MapEnabled, false},
 		{"features.issueCreate", cfg.Features.IssueCreate, true},
-		{"features.passwordBootstrap", cfg.Features.PasswordBootstrap, true},
 		{"redmine.publicBaseURL", cfg.Redmine.PublicBaseURL, "http://localhost:8080"},
 		{"redmine.oauth.clientId", cfg.Redmine.OAuth.ClientID, "rmapp-client"},
 		{"redmine.oauth.stateTTLMinutes", cfg.Redmine.OAuth.StateTTLMinutes, 10},
@@ -89,9 +81,6 @@ func TestLoadMissingRequiredKey(t *testing.T) {
 		remove string // validYAML から取り除く行の目印
 	}{
 		{"session.secretFile", "secretFile"},
-		{"webauthn.rpId", "rpId"},
-		{"webauthn.rpName", "rpName"},
-		{"webauthn.origins", "origins"},
 		{"crypto.kekFile", "kekFile"},
 		{"redmine.baseURL", "baseURL"},
 		{"database.dsn", "dsn"},
@@ -135,7 +124,6 @@ func TestLoadInvalidValues(t *testing.T) {
 		wants string
 	}{
 		{"bad logLevel", validYAML + "logLevel: verbose\n", "logLevel"},
-		{"bad userVerification", strings.Replace(validYAML, "rpName: RedminePocketGo", "rpName: RedminePocketGo\n  userVerification: always", 1), "userVerification"},
 		{"unknown key", validYAML + "unknownKey: 1\n", "unknown"},
 		{"bad redmine URL", strings.Replace(validYAML, "http://localhost:8080", "'::not a url'", 1), "redmine.baseURL"},
 		{"redirectURI not absolute", strings.Replace(validYAML, "https://example.com/api/auth/callback", "/api/auth/callback", 1), "redmine.oauth.redirectURI"},
@@ -174,8 +162,6 @@ func TestLoadPrecedence(t *testing.T) {
 			return "debug", true
 		case "RMAPP_SESSION_IDLETIMEOUTHOURS":
 			return "24", true
-		case "RMAPP_WEBAUTHN_ORIGINS":
-			return "https://a.example,https://b.example", true
 		case "RMAPP_REDMINE_OAUTH_SCOPES":
 			return "view_project, view_issues ,add_issues", true
 		case "RMAPP_REDMINE_PUBLICBASEURL":
@@ -202,10 +188,6 @@ func TestLoadPrecedence(t *testing.T) {
 	}
 	if cfg.Redmine.PublicBaseURL != "https://redmine.example" {
 		t.Errorf("publicBaseURL = %q; 末尾スラッシュは除去される", cfg.Redmine.PublicBaseURL)
-	}
-	want := []string{"https://a.example", "https://b.example"}
-	if len(cfg.WebAuthn.Origins) != 2 || cfg.WebAuthn.Origins[0] != want[0] || cfg.WebAuthn.Origins[1] != want[1] {
-		t.Errorf("env list override: origins = %v; want %v", cfg.WebAuthn.Origins, want)
 	}
 }
 
@@ -318,5 +300,31 @@ func TestOAuthRedirectURIAllowsLoopbackHTTP(t *testing.T) {
 		if _, err := Load(writeConfig(t, yaml), nil, noEnv); err != nil {
 			t.Errorf("loopback http redirectURI %s rejected: %v", host, err)
 		}
+	}
+}
+
+func TestRemovedKeysAreRejected(t *testing.T) {
+	// パスキー・パスワードブートストラップは廃止（Design.md §3）。残した設定は
+	// タイプミス同様、unknown キーとして起動を止める。
+	for name, extra := range map[string]string{
+		"webauthn section":      "webauthn:\n  rpId: example.com\n",
+		"passwordBootstrap key": "features:\n  passwordBootstrap: true\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, validYAML+extra), nil, noEnv)
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), "unknown") {
+				t.Fatalf("err = %v; want an unknown-key error", err)
+			}
+		})
+	}
+	// 環境変数・フラグでも指定できない。
+	env := func(k string) (string, bool) {
+		if k == "RMAPP_FEATURES_PASSWORDBOOTSTRAP" {
+			return "true", true
+		}
+		return "", false
+	}
+	if _, err := Load(writeConfig(t, validYAML), map[string]string{"webauthn.rpId": "x"}, env); err == nil {
+		t.Error("override of removed key webauthn.rpId accepted")
 	}
 }

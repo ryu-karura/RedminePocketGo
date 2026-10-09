@@ -26,9 +26,7 @@ func testStoreEmpty(t *testing.T) *store.Store {
 func testStore(t *testing.T) *store.Store {
 	t.Helper()
 	s := testStoreEmpty(t)
-	if err := s.CreateUser(context.Background(), &store.User{
-		ID: "u1", RedmineLogin: "alice", DisplayName: "Alice", WebAuthnUserHandle: []byte{1},
-	}); err != nil {
+	if _, err := s.DB().Exec(`INSERT INTO users (id, redmine_user_id, redmine_login, display_name) VALUES ('u1', 1, 'alice', 'Alice')`); err != nil {
 		t.Fatal(err)
 	}
 	return s
@@ -50,7 +48,7 @@ func TestIssueAndResolve(t *testing.T) {
 	s := newTestSessions(t, &now)
 	ctx := context.Background()
 
-	token, err := s.Issue(ctx, "u1", []byte{9})
+	token, err := s.Issue(ctx, "u1")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -73,7 +71,7 @@ func TestIdleTimeoutSlides(t *testing.T) {
 	now := time.Now().UTC()
 	s := newTestSessions(t, &now)
 	ctx := context.Background()
-	token, _ := s.Issue(ctx, "u1", nil)
+	token, _ := s.Issue(ctx, "u1")
 
 	// 50 分ごとにアクセスすればアイドル 1h を超えない
 	for i := 0; i < 3; i++ {
@@ -98,7 +96,7 @@ func TestAbsoluteTimeout(t *testing.T) {
 	now := time.Now().UTC()
 	s := newTestSessions(t, &now)
 	ctx := context.Background()
-	token, _ := s.Issue(ctx, "u1", nil)
+	token, _ := s.Issue(ctx, "u1")
 
 	// アイドルを回避し続けても絶対タイムアウト 24h で失効する
 	for i := 0; i < 25; i++ {
@@ -114,7 +112,7 @@ func TestRevoke(t *testing.T) {
 	now := time.Now().UTC()
 	s := newTestSessions(t, &now)
 	ctx := context.Background()
-	token, _ := s.Issue(ctx, "u1", nil)
+	token, _ := s.Issue(ctx, "u1")
 	if err := s.Revoke(ctx, token); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}

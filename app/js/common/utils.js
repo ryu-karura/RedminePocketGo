@@ -97,7 +97,7 @@ const MESSAGES = {
   forbidden: 'この操作を行う権限がありません。',
   not_found: '対象が見つかりませんでした。',
   invalid_request: '入力内容を確認してください。',
-  redmine_credential_invalid: 'Redmine の API キーが無効です。再度連携してください。',
+  redmine_credential_invalid: 'Redmine との連携が切れました。再認可してください。',
   upstream_error: 'Redmine に接続できませんでした。時間をおいて再試行してください。',
   rate_limited: '試行回数が多すぎます。しばらく待ってからやり直してください。',
   internal_error: 'サーバーでエラーが発生しました。',

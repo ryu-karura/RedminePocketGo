@@ -9,17 +9,11 @@
   color: var(--primary);
   margin-bottom: var(--space-5);
 }
-.login-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  text-align: left;
-  margin-top: var(--space-4);
+.login-lead {
+  font-size: var(--fs-base);
+  margin: 0 0 var(--space-4);
 }
-.login-panel label {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+.login-note {
   font-size: var(--fs-sm);
-  color: var(--muted);
+  margin: var(--space-4) 0 0;
 }

@@ -24,23 +24,26 @@ func newTestClient(upstreamURL string, pageSize int) *Client {
 	})
 }
 
-func TestClientInjectsKeyAndJoinsSubURI(t *testing.T) {
-	var gotPath, gotKey string
+func TestClientSendsBearerAndNeverAnAPIKey(t *testing.T) {
+	var gotPath, gotAuth, gotAPIKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath, gotKey = r.URL.Path, r.Header.Get("X-Redmine-Api-Key")
+		gotPath, gotAuth, gotAPIKey = r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("X-Redmine-Api-Key")
 		fmt.Fprint(w, `{"projects":[],"total_count":0,"offset":0,"limit":100}`)
 	}))
 	defer srv.Close()
 
 	c := newTestClient(srv.URL, 100)
-	if _, err := c.ListProjects(context.Background(), "key-1"); err != nil {
+	if _, err := c.ListProjects(context.Background(), "token-1"); err != nil {
 		t.Fatalf("ListProjects: %v", err)
 	}
 	if gotPath != "/redmine/projects.json" {
 		t.Errorf("path = %q; want /redmine/projects.json", gotPath)
 	}
-	if gotKey != "key-1" {
-		t.Errorf("api key = %q; want key-1", gotKey)
+	if gotAuth != "Bearer token-1" {
+		t.Errorf("Authorization = %q; want Bearer token-1", gotAuth)
+	}
+	if gotAPIKey != "" {
+		t.Errorf("X-Redmine-Api-Key = %q; API keys are never sent (CLAUDE.md §9-1)", gotAPIKey)
 	}
 }
 
