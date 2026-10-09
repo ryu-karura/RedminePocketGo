@@ -131,6 +131,10 @@ puts "ISSUE_ID=#{issue.id}"
 puts "CLIENT_ID=#{app.uid}"
 puts "CLIENT_SECRET=#{app.plaintext_secret}"
 puts "PERMISSIONS=#{Redmine::AccessControl.permissions.map(&:name).join(' ')}"
+# 管理者向けの登録画面の場所（docs/Setup.md の手順の根拠）
+puts "OAUTH_ROUTES=#{Rails.application.routes.routes.map { |r| r.path.spec.to_s.sub('(.:format)', '') }.grep(/oauth/).uniq.sort.join(' ')}"
+admin_items = Redmine::MenuManager.items(:admin_menu).select { |i| i.name.to_s =~ /oauth|application/i }
+puts "OAUTH_ADMIN_MENU=#{admin_items.map { |i| "#{i.name}|#{i.url}|#{I18n.t(i.caption, default: i.caption.to_s, locale: :ja) rescue i.caption}" }.join(' ; ')}"
 RUBY
 )" || die "rails runner の実行に失敗しました（Doorkeeper のモデル名・スコープ名の想定違いの可能性）"
 
@@ -143,6 +147,8 @@ CLIENT_SECRET="$(pick CLIENT_SECRET)"
   || die "前提の払い出しに失敗しました（出力を確認してください）"
 printf '::add-mask::%s\n' "${CLIENT_SECRET}" >&2
 record "Redmine 権限名一覧（スコープの候補）" "$(pick PERMISSIONS)"
+record "管理者向け OAuth 関連ルート" "$(pick OAUTH_ROUTES)"
+record "管理メニューの OAuth 関連項目（名前|URL|日本語キャプション）" "$(pick OAUTH_ADMIN_MENU)"
 
 # --- ユーティリティ ---------------------------------------------------------
 
