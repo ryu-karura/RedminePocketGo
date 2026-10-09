@@ -1,7 +1,10 @@
 # Redmine OAuth Probe: Redmine 7 の OAuth 2.0 プロバイダ（Doorkeeper）の実挙動を
 # 探査し、結果をジョブサマリに出す（docs/plan.md フェーズ 10 第 1 タスク、
-# docs/Design.md §14）。RedmineDocker は checkout して起動するのみで
-# 変更しない（CLAUDE.md §9-6）。Redmine の API キーは使わない（§9-1）。
+# docs/Design.md §14）。続けて、同じ起動済みスタックで運用スクリプト
+# （redmine-seed-testdata.sh → test-stack.sh）を実行して検証する。
+# stack-test.yml は GitHub に無活動で自動無効化されることがあり、こちらは push で
+# 確実に動く。RedmineDocker は checkout して起動するのみで変更しない
+# （CLAUDE.md §9-6）。Redmine の API キーは使わない（§9-1）。
 name: Redmine OAuth Probe
 
 on:
@@ -10,6 +13,9 @@ on:
     branches: [main, "claude/**", "ccr-*"]
     paths:
       - "scripts/redmine-oauth-probe.sh"
+      - "scripts/redmine-seed-testdata.sh"
+      - "scripts/test-stack.sh"
+      - "server/stacktest/**"
       - ".github/workflows/oauth-probe.yml"
 
 permissions:
@@ -68,6 +74,33 @@ jobs:
 
       - name: OAuth 探査
         run: scripts/redmine-oauth-probe.sh
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+
+      - name: rmapp のシークレットを生成
+        run: |
+          bash scripts/generate-secrets.sh
+          mkdir -p server/data
+
+      - name: テストデータと OAuth トークンを用意（redmine-seed-testdata.sh）
+        id: seed
+        env:
+          CI: "true"
+        run: |
+          token="$(scripts/redmine-seed-testdata.sh | tail -1 | cut -d= -f2-)"
+          if [ -z "${token}" ]; then
+            echo "アクセストークンを取得できませんでした" >&2
+            exit 1
+          fi
+          echo "::add-mask::${token}"
+          echo "access_token=${token}" >> "${GITHUB_OUTPUT}"
+
+      - name: scripts/test-stack.sh を実行
+        env:
+          RMAPP_STACK_ACCESS_TOKEN: ${{ steps.seed.outputs.access_token }}
+        run: scripts/test-stack.sh
 
       - name: 失敗時の redmine-web ログ
         if: failure()

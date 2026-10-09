@@ -74,9 +74,17 @@ jobs:
       - name: SQLite データディレクトリを作成
         run: mkdir -p server/data
 
+      # RedmineDocker の scripts/generate-secrets.sh は `tr | head -c 24` が SIGPIPE
+      # （tr: write error: Broken pipe）で失敗するため使わない（RedmineDocker 側の
+      # 不具合。本リポジトリでは変更しない — CLAUDE.md §9-6）。同じファイル名・形式
+      # （改行なし）でここで生成する。
       - name: RedmineDocker のシークレットを生成
         working-directory: redminedocker
-        run: bash scripts/generate-secrets.sh
+        run: |
+          mkdir -p secrets && chmod 700 secrets
+          printf '%s' "$(openssl rand -hex 12)" > secrets/db_password.txt
+          printf '%s' "$(openssl rand -hex 64)" > secrets/secret_key_base.txt
+          chmod 600 secrets/*.txt
 
       - name: RedmineDocker 開発スタックを起動
         working-directory: redminedocker
@@ -101,20 +109,24 @@ jobs:
           docker logs redmine-web
           exit 1
 
-      - name: REST API を有効化しテストデータを投入
+      # Redmine の API キーは使わない（CLAUDE.md §9-1）。rails runner で REST API を
+      # 有効化し、テストデータと OAuth アプリ・アクセストークンを Redmine 側で作る。
+      - name: REST API を有効化しテストデータと OAuth トークンを用意
         id: seed
+        env:
+          CI: "true"
         run: |
-          api_key="$(scripts/redmine-seed-testdata.sh | tail -1 | cut -d= -f2-)"
-          if [ -z "${api_key}" ]; then
-            echo "API キーを取得できませんでした" >&2
+          token="$(scripts/redmine-seed-testdata.sh | tail -1 | cut -d= -f2-)"
+          if [ -z "${token}" ]; then
+            echo "アクセストークンを取得できませんでした" >&2
             exit 1
           fi
-          echo "::add-mask::${api_key}"
-          echo "api_key=${api_key}" >> "${GITHUB_OUTPUT}"
+          echo "::add-mask::${token}"
+          echo "access_token=${token}" >> "${GITHUB_OUTPUT}"
 
       - name: scripts/test-stack.sh を実行
         env:
-          RMAPP_STACK_API_KEY: ${{ steps.seed.outputs.api_key }}
+          RMAPP_STACK_ACCESS_TOKEN: ${{ steps.seed.outputs.access_token }}
         run: scripts/test-stack.sh
 
       - name: RedmineDocker スタックを後片付け
