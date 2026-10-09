@@ -47,7 +47,7 @@ BASE="${REDMINE_BASE_URL}${REDMINE_SUBURI}"
 # 実際には到達されない（Location ヘッダーを読むだけ）。https にして
 # Doorkeeper の redirect_uri SSL 検査に依存しないようにする。
 REDIRECT_URI="https://rmapp.example.test/api/auth/callback"
-FULL_SCOPES="view_project view_issues add_issues edit_issues add_issue_notes"
+FULL_SCOPES="view_project view_issues add_issues edit_issues add_issue_notes view_members"
 RO_SCOPES="view_project view_issues"
 
 WORK="$(mktemp -d)"
