@@ -33,6 +33,7 @@
 | 7 | 端末紛失対策とセキュリティ強化 | スキップ（対応しない） |
 | 8 | 統合テストと運用スクリプト | 完了 |
 | 9 | チケット詳細のカスタムフィールド表示 | 完了 |
+| 10 | OAuth 2.0 化（Redmine 7 前提・API キー廃止・パスキー廃止） | 未着手 |
 | — | 地図表示（Design.md §12） | 指示があるまで着手しない |
 
 状態は「未着手 / 進行中 / 完了」の 3 値。変更したら同じコミットで更新する。
@@ -274,6 +275,81 @@ CI 経由で初めて顕在化し、修正した（サンドボックスでは D
 `node --test app/js/tests/*.test.js` 緑。`make test-e2e` 緑でカスタム
 フィールドの表示を実機検証。
 
+## フェーズ 10: OAuth 2.0 化
+
+目的: ログインを Redmine 7 の OAuth 2.0（認可コード + PKCE）に一本化し、
+`rmapp` を Redmine のアプリケーションとして登録して使う。**Redmine の API
+キーは一切使わない**（CLAUDE.md §9-1）。パスキー（WebAuthn）・登録コード・
+パスワードブートストラップ・端末管理は廃止する。設計は Design.md §3〜§5・
+§10・§11 に記載済み（本フェーズは実装の移行）。フェーズ 2・3・5 の完了済み
+成果物のうち、認証と API キー保管に関する部分を置き換える。
+
+- [ ] 実機確認（Design.md §14「OAuth の実機確認」①〜⑤）: RedmineDocker 7.0.2
+      開発スタックで `rails runner` により OAuth アプリケーションを作り、
+      authorize → token → `/users/current.json` → refresh → revoke を実際に
+      通して、必要スコープ・PKCE 受理・リフレッシュの入れ替え挙動・6.1.x
+      で報告されたスコープ未適用の有無を確認する。結果を Design.md §3.6 /
+      §14 に反映する（Docker デーモンのある CI 上で実施。stack-test.yml に
+      探査ステップを追加）
+- [ ] `internal/config`: `redmine.oauth.*` と `redmine.publicBaseURL` を追加、
+      `webauthn.*` / `features.passwordBootstrap` を削除。必須キー欠落・
+      client secret 空ファイルはキー名付きで起動中止。`config.yaml` 雛形と
+      `scripts/generate-secrets.sh`（`redmine_oauth_client_secret.txt` の
+      空プレースホルダ、既存ファイルは上書きしない）
+- [ ] `internal/store`: マイグレーション 0002（`users.redmine_user_id`、
+      `oauth_tokens`、`oauth_states` を追加、`credentials` /
+      `redmine_credentials` / `enrollment_codes` / `webauthn_challenges` と
+      `sessions.credential_id` を削除。空 DB と適用済み DB の両方でテスト）
+      と各メソッド（state の 1 回限り消費はアトミック）
+- [ ] `internal/redmine`: OAuth クライアント（authorize URL 構築、コード交換、
+      リフレッシュ、失効、`CurrentUser`）。`httptest.Server` のみでテスト。
+      `Authorization` ヘッダーを受け取る形に既存クライアントを変更し、API
+      キー引数を除去
+- [ ] `internal/credential`: アクセス/リフレッシュを別ノンスで AES-256-GCM
+      保管、`MarshalJSON` は `"[redacted]"`、ユーザー単位 single-flight
+      リフレッシュ（新しい組を先に永続化）、`invalid_grant` で無効化、
+      一時障害では無効化しない
+- [ ] `internal/auth`: `GET /api/auth/login`（state・PKCE S256・戻り先の
+      許可リスト）と `GET /api/auth/callback`（state 検証、コード交換、
+      利用者特定、users upsert、セッション再発行、失敗は
+      `#login?error=<code>`）。レート制限。異常系（同意拒否・state 不一致/
+      期限切れ/使用済み・交換失敗・オープンリダイレクト試行）のテーブル駆動
+- [ ] `internal/proxy` / `internal/httpapi/aggregate`: `Authorization: Bearer`
+      付与、`X-Redmine-API-Key` 受信 400 を維持し送信は一切しない、上流 401 は
+      リフレッシュして 1 回だけ再試行、失敗で 409
+      `redmine_credential_invalid`、リフレッシュ一時障害は 502
+- [ ] `POST /api/auth/logout`（`/oauth/revoke` をベストエフォート）、
+      `GET /api/auth/me`（連携状態・付与スコープ・最終リフレッシュ）、
+      `POST /api/auth/reauthorize`
+- [ ] WebAuthn 一式の削除: `auth/webauthn.go`・`enroll.go`・`bootstrap.go`、
+      `httpapi/devices.go` と登録/ログイン/端末系ルート、`go-webauthn`
+      依存（`go mod tidy`）、関連テスト、`/my/account.json` への呼び出し
+- [ ] フロント: `login` 画面を「Redmine でログイン」（ページ遷移）と
+      `error` クエリ表示に置換、`js/common/auth.js`（WebAuthn）と
+      そのテストを削除、`settings` 画面を連携状態・スコープ・再認可・
+      ログアウトに置換、`redmine_credential_invalid` の再認可導線、
+      `app.js` のエラーコード処理
+- [ ] `server/e2e/`: CDP 仮想認証器を廃止し、擬似 Redmine に OAuth 提供側
+      （authorize / token / revoke / `users/current`）を実装。ログイン →
+      各画面 → `redmine_credential_invalid` → 再認可 → 復旧を実機検証
+- [ ] 運用スクリプト・CI: `scripts/redmine-seed-testdata.sh` と
+      `scripts/test-stack.sh`（`server/stacktest`）から管理者 API キーの利用を
+      除去し、`rails runner` で OAuth アプリケーションとアクセストークンを
+      払い出す方式に変更。`stack-test.yml` を追従。`credential.NewTestAPIKey`
+      等の API キー用テスト補助を削除
+- [ ] ドキュメント同期: Setup.md（Redmine での OAuth アプリケーション登録
+      手順、`redmine.oauth.*` の設定、既存環境の移行手順）、Manual.md
+      （認可の取り消し、スコープ変更時の全員再ログイン、KEK 喪失時の復旧、
+      端末紛失時の運用）、README.md、Design.md 冒頭の「設計変更」注記の削除、
+      `.claude/skills/*` の古い記述の更新
+
+完了条件: `make build` / `make test-unit` / `make test-api` 緑、
+`node --test app/js/tests/*.test.js` 緑、`make test-e2e` 緑（OAuth ログイン〜
+再認可までを自動検証しスクリーンショットを証跡保存）、`shellcheck
+scripts/*.sh` 通過、`stack-test.yml` が実 RedmineDocker（7.0.2）で緑。
+リポジトリ全体で `api_key` / `X-Redmine-API-Key`（拒否ヘッダーの記述と
+その試験を除く）・`webauthn` の参照が残っていない（`grep` で検証）。
+
 ---
 
 ## 自動実行ログ
@@ -321,3 +397,4 @@ CI 経由で初めて顕在化し、修正した（サンドボックスでは D
 | 2026-07-23 | PR #6（フェーズ 9）ブランチに `origin/main`（PR #5 マージ後）を取り込み、`docs/plan.md` フェーズ一覧のフェーズ 7・8 状態を main 側の最新値（スキップ／進行中）で採用し、フェーズ 9 の完了行を追加する形に解消 | オーナーから「main とマージして」の直接指示を受けたため。ブランチ作成後に main 側で PR #5（フェーズ 8）が追加した内容（ヘルスエンドポイント、test-stack.sh、backup/restore、フェーズ 7 スキップ注記、複数の自動実行ログ行）と `docs/plan.md`・`server/internal/redmine/client.go` が競合したため、両者の変更を保持する形でマージ解消した |
 | 2026-07-23 | フェーズ 8 に「`scripts/redmine-seed-testdata.sh` + `.github/workflows/stack-test.yml`」タスクを追加し完了 | オーナーの直接指示（ブランチ `claude/docker-config-review-ezxi6j`）。フェーズ 8 唯一の残完了条件「実 RedmineDocker スタックでの `scripts/test-stack.sh` 緑」が、Docker デーモンのない無人サンドボックスでは 3 回連続（自動実行ログ 07-23 04:11・10:11・16:13）検証不能で停滞していたため、Docker デーモンを持つ GitHub Actions 上で REST API 有効化・テストデータ投入・`scripts/test-stack.sh` 実行までを自動化する CI ワークフローを追加し、完了条件の検証手段をサンドボックス非依存にした。本セッションでは PR 作成のみを行い、CI 実行結果（stack-test ワークフローの緑）そのものの確認は次回に委ねる |
 | 2026-07-23 | フェーズ 8 の状態を「進行中」から「完了」に変更 | PR #7 の CI（`stack-test.yml`、コミット da81b3a）で `scripts/test-stack.sh` の緑を実際に確認できたため。CI 実行で `scripts/redmine-seed-testdata.sh` の実装バグ 2 件（`docker exec` が entrypoint.sh 由来の `SECRET_KEY_BASE` を継承しないこと、シークレットファイルが root にしか読めないこと）が初めて顕在化し、いずれも修正済み。フェーズ 8 完了条件の詳細はフェーズ 8 節を参照 |
+| 2026-10-09 | フェーズ 10（OAuth 2.0 化）を新設（未着手）。CLAUDE.md と Design.md を OAuth 前提の設計に改訂 | オーナー指示: ① 利用者の API キー使用禁止 ② Redmine 7 前提 ③ アプリを Redmine に登録してログインさせたい。認証をパスキー + API キー保管から Redmine 7 の OAuth 2.0（Doorkeeper、認可コードのみ・リフレッシュあり・スコープ = Redmine 権限）へ置換する。**パスキー・登録コード・パスワードブートストラップ・端末管理は廃止**する判断を含む（認証手段が OAuth のみになり不要。併用したい場合は別フェーズとして再提案する）。フェーズ 2・3・5 の完了は履歴として維持し、置換はフェーズ 10 で行う。フェーズ 7（スキップ済み）の回復コード構想も OAuth 化で不要になった（Design.md §11.4 を改訂） |

@@ -4,6 +4,14 @@
 構築の手順は [Setup.md](Setup.md)、日常の操作は [Manual.md](Manual.md) に
 分けて記載しています。本書では手順は扱いません。
 
+> **設計変更（OAuth 2.0 化）**: 認証はパスキー（WebAuthn）から **Redmine 7 の
+> OAuth 2.0（認可コードフロー）** に置き換わりました。`rmapp` は Redmine に
+> OAuth アプリケーションとして登録され、利用者は Redmine 自身のログイン画面で
+> 認証します。**Redmine の API キーは一切使用しません。** 本書は変更後の
+> 目標設計です。実装の移行は docs/plan.md フェーズ 10 で行い、完了までの間
+> Setup.md / Manual.md / README.md には旧方式（パスキー・API キー）の記述が
+> 残ります。
+
 本プロジェクトは 2 つの既存リポジトリを前提とします。
 
 | リポジトリ | 役割 | 本書での扱い |
@@ -18,22 +26,42 @@
 ### 1.1 目的
 
 RedmineDocker で運用される Redmine を、スマートフォンから快適に参照・更新
-できるようにします。あわせて、パスワードの手入力を日常から排除し、Redmine の
-API キーが利用者の端末に残らない構成を実現します。
+できるようにします。ログインは Redmine 自身の認証（OAuth 2.0）に委ね、
+`rmapp` は利用者のパスワードにも API キーにも触れません。権限は利用者が同意
+したスコープに限定され、Redmine の「マイアカウント」からいつでも取り消せます。
 
 ### 1.2 接続先（RedmineDocker）に関する前提事実
 
-- Redmine 6.1.3。サブ URI `/redmine` で配信される
+- **Redmine 7.0.2 のみを対象とする**（5.x / 6.x 互換は持たない）。サブ URI
+  `/redmine` で配信される
   （開発時: `http://localhost:8080/redmine/`）。
 - データベースは PostgreSQL 18 + PostGIS 3.6。
-- `redmine_gtt` を含む 13 のプラグインがイメージに焼き込み済み。
+- `redmine_gtt` を含む 15 のプラグインがイメージに焼き込み済み。
   **位置情報の基盤は最初から存在します。**
 - 本番はホスト Apache が 443 で TLS を終端し、`/redmine` を
   `redmine-web`（127.0.0.1:80）へ転送する二層構成。
 - シークレットはファイルベース（`scripts/generate-secrets.sh` →
   `secrets/*.txt` → Docker/Podman secrets）。平文の環境変数や
   コミットは禁止。
-- Redmine の REST API は管理画面で有効化が必要。
+- Redmine の REST API は管理画面で有効化が必要。**OAuth 2.0 プロバイダ
+  （Doorkeeper）も REST API が無効のあいだは認証を拒否する。**
+- OAuth 2.0 プロバイダとしての Redmine（`config/initializers/30-redmine.rb`
+  の Doorkeeper 設定より）:
+  - 許可するグラントは `authorization_code` のみ（パスワード・クライアント
+    資格情報フローは使えない）。
+  - リフレッシュトークンが有効。アクセストークンの有効期限は Doorkeeper の
+    既定（2 時間）。リフレッシュのたびにリフレッシュトークンは入れ替わる。
+  - スコープ = Redmine の権限名（`view_issues` など）と管理者用 `admin`。
+    スコープを指定しない認可要求は公開権限のみになる。
+  - クライアントシークレットとトークンは DB にハッシュ保存される
+    （シークレットは登録直後の 1 回しか表示されない）。
+  - **PKCE は強制されない**（`force_pkce` なし）。`rmapp` は強制の有無に
+    関わらず常に S256 で送る。
+  - アプリケーションの登録・編集は **Redmine 管理者のみ**。利用者は
+    「マイアカウント」で認可済みアプリを確認・取り消しできる。
+  - トークン introspection は無効。利用者の特定には
+    `GET /users/current.json` を使う。
+  - 実装時に実機で確認する事項は §14 に列挙する。
 
 本リポジトリはこのスタックを**変更しません**。接続するだけです。
 
@@ -67,12 +95,15 @@ client ──443──► ホスト Apache（TLS, HSTS）
                    │
                    └── /        ──► rmapp :8090（本リポジトリ）
                                        ├─ SPA 静的配信（app/）
-                                       ├─ パスキー認証（WebAuthn）
-                                       ├─ API キー保管庫（暗号化）
+                                       ├─ OAuth クライアント（認可コード + PKCE）
+                                       ├─ トークン保管庫（暗号化。アクセス + リフレッシュ）
                                        └─ REST API 中継
-                                             │ X-Redmine-API-Key
+                                             │ Authorization: Bearer <アクセストークン>
                                              ▼
                                        http://redmine-web/redmine/...（REST API）
+
+   ログイン時のみ: ブラウザ ──► /redmine/oauth/authorize（Redmine のログイン・同意画面）
+                  Redmine ──► rmapp /api/auth/callback（認可コード）
 ```
 
 開発時はホスト Apache を介さず、`rmapp` に直接アクセスします
@@ -85,8 +116,8 @@ SPA から Redmine の REST API を直接叩く構成も成立しますが、次
 
 | 論点 | 直接続 | 中継あり |
 |---|---|---|
-| 認証方式 | API キーまたは Basic 認証のみ。パスキー不可 | パスキーに対応できる |
-| API キーの所在 | ブラウザ内。XSS で漏洩する | サーバー内のみ |
+| 認証方式 | API キーまたは Basic 認証のみ。OAuth の機密クライアントにできない（クライアントシークレットをブラウザに置けない） | 機密クライアントとして OAuth 2.0 認可コードフローを使える |
+| トークンの所在 | ブラウザ内。XSS で漏洩する | サーバー内のみ |
 | CORS | Redmine 側で許可設定が必要 | 同一オリジンのため不要 |
 | 通信回数 | 画面ごとに複数回 | サーバー側で集約できる |
 | 権限の絞り込み | できない | 許可リストで制御できる |
@@ -102,7 +133,7 @@ IoTDesignTemplate と同じく、SPA は Go サーバーが配信する前提で
 
 - CORS の設定が不要になる
 - `SameSite=Lax` の Cookie がそのまま使える
-- パスキーの RP ID とアプリの配信元が一致する
+- OAuth のリダイレクト URI（`/api/auth/callback`）がアプリの配信元と一致する
 
 テンプレートの `baseURL`（サブパス配信）設定は引き継ぎます。ホスト Apache
 配下で `/app` のようなサブパスに置く場合に使います。既定はルート配信です。
@@ -113,74 +144,78 @@ IoTDesignTemplate と同じく、SPA は Go サーバーが配信する前提で
 
 ### 3.1 方式
 
-WebAuthn（パスキー）を主たる認証方式とします。Go 側は
-`github.com/go-webauthn/webauthn` を使用します。
+Redmine 7 を **OAuth 2.0 認可サーバー**、`rmapp` を**機密クライアント**とする
+認可コードフロー（RFC 6749 §4.1）+ PKCE（RFC 7636、`S256`）です。
 
-Discoverable Credential（Resident Key）を要求し、ユーザー名の入力なしに
-ログインできるようにします。ユーザー検証（`userVerification`）は
-`required` とし、生体認証または PIN を必須とします。
+- 利用者のパスワードは Redmine のログイン画面にだけ入力され、`rmapp` には
+  届きません。ブートストラップ用のパスワード受け取り経路は設けません。
+- Redmine の API キーは使いません。`/my/account.json` も呼びません。
+- `rmapp` が Redmine に登録するのは 1 件だけです（管理者が一度だけ実施。
+  Setup.md）。
 
-IoTDesignTemplate の認証はパスワード + bcrypt ですが、そのうち次の設計は
-そのまま引き継ぎます。
+IoTDesignTemplate から引き継ぐ設計:
 
-- ログイン試行のレート制限（連続 5 回失敗で 60 秒ロック）
-- 存在しないユーザーでも同等の処理時間をかけ、ユーザー名の推測を防ぐ
-  （パスワードブートストラップ経路に適用）
+- ログイン関連エンドポイントのレート制限（連続 5 回失敗で 60 秒ロック）
 - セッションの二軸タイムアウト（アイドル + 絶対）
 
-### 3.2 エンドポイント
+### 3.2 アプリケーション登録（Redmine 側）
+
+| 項目 | 値 |
+|---|---|
+| 名前 | `RedminePocketGo`（任意） |
+| リダイレクト URI | `<rmapp の公開 URL>/api/auth/callback`（`redmine.oauth.redirectURI` と完全一致） |
+| 機密クライアント | はい（Confidential） |
+| スコープ | §3.6 の一覧（`redmine.oauth.scopes` と一致させる） |
+
+登録で得た **Client ID** は設定ファイル、**Client Secret** は
+`secrets/redmine_oauth_client_secret.txt` に置きます（登録直後の 1 回しか
+表示されない）。紛失したら Redmine 側でシークレットを再生成します。
+
+### 3.3 エンドポイント
 
 | メソッド | パス | 内容 |
 |---|---|---|
-| POST | `/api/auth/register/begin` | パスキー登録の開始。チャレンジを返す |
-| POST | `/api/auth/register/finish` | 登録の完了。公開鍵を保存する |
-| POST | `/api/auth/login/begin` | 認証の開始。チャレンジを返す |
-| POST | `/api/auth/login/finish` | 認証の完了。セッションを発行する |
-| POST | `/api/auth/logout` | セッションを破棄する |
-| GET | `/api/auth/me` | 現在のセッション情報を返す（SPA 起動時に呼ぶ） |
-| POST | `/api/auth/bootstrap` | 初回登録（§3.3）。Redmine 認証情報を検証し、登録セレモニー開始情報を返す。`features.passwordBootstrap` が false なら 404 |
-| POST | `/api/auth/enrollment-code` | 登録コード発行（§3.4。要ログイン）。`{ "code": "123456", "expiresAt": ... }` |
-| POST | `/api/auth/enroll` | 登録コードの引き換え（§3.4）。成功で登録セレモニー開始情報を返す |
-| GET | `/api/devices` | 端末（パスキー）一覧（要ログイン。id は Credential ID の base64url） |
-| PATCH | `/api/devices/{id}` | 端末の表示名変更（要ログイン） |
-| DELETE | `/api/devices/{id}` | 端末の削除。該当パスキーの全セッションを即失効させる（要ログイン） |
+| GET | `/api/auth/login` | 認可要求の開始。`state` と PKCE を生成して保存し、Redmine の `/oauth/authorize` へ 302 する。クエリ `return` は画面ハッシュ（`#projects` 等）の許可リストのみ受け付ける |
+| GET | `/api/auth/callback` | Redmine からの戻り。`state` 検証 → コード交換 → 利用者特定 → セッション発行 → SPA へ 302。失敗時は `#login?error=<code>` へ 302 |
+| POST | `/api/auth/logout` | セッションを破棄し、トークンを Redmine 側でも失効（`/oauth/revoke`）させる |
+| GET | `/api/auth/me` | 現在のセッション情報とトークンの状態を返す（SPA 起動時に呼ぶ） |
+| POST | `/api/auth/reauthorize` | トークン無効時の再認可（`/api/auth/login` の URL を返す。SPA が遷移する） |
 
-begin 系のレスポンスは `{ "challengeId": "...", "options": { "publicKey": ... } }`。
-finish 系はクエリパラメータ `challengeId` で対応するセレモニーを指定し、
-ボディは認証器のレスポンスをそのまま送る。finish 成功時はセッション
-Cookie を発行する。
+`/api/auth/login` と `/api/auth/callback` は**ブラウザのページ遷移**で使うため
+`X-Requested-With` を要求しない GET です（状態を変えるのは callback のみで、
+`state` がその CSRF 対策を兼ねる）。`/api/auth/logout` など POST は従来どおり
+`X-Requested-With` 必須です。
 
 `GET /api/auth/me` を SPA 起動時に呼び、未認証ならログイン画面を出す流れは
 テンプレートと同一です。
 
-### 3.3 初回登録（ブートストラップ）
-
-パスキーが 1 つも登録されていない状態では、パスキーでログインできません。
-最初だけ Redmine の認証情報で本人確認を行い、その場でパスキーを登録します。
+### 3.4 ログインの流れ
 
 ```
-1. 利用者が Redmine のログイン名とパスワードを入力
-2. rmapp が Redmine の /redmine/my/account.json に Basic 認証で問い合わせ
-3. 成功したら、レスポンスに含まれる API キーを取得
-4. API キーを暗号化して保存し、ユーザーレコードを作成
-5. その場で WebAuthn の登録セレモニーを実行
-6. 以降はパスキーのみでログイン可能
+1. ログイン画面の「Redmine でログイン」を押す → GET /api/auth/login
+2. rmapp が state・code_verifier を生成して保存（10 分・1 回限り）、
+   Redmine の /redmine/oauth/authorize?response_type=code&client_id=…
+   &redirect_uri=…&scope=…&state=…&code_challenge=…&code_challenge_method=S256 へ 302
+3. 利用者が Redmine にログイン（未ログインの場合）し、スコープに同意
+4. Redmine が /api/auth/callback?code=…&state=… へ 302
+5. rmapp: state を検証（一致・未使用・期限内。使用済みにする）
+6. rmapp → Redmine（サーバー間）: POST /redmine/oauth/token
+   grant_type=authorization_code, code, redirect_uri, code_verifier,
+   client_id, client_secret → access_token / refresh_token / expires_in / scope
+7. rmapp → Redmine: GET /redmine/users/current.json（Bearer）で利用者を特定
+8. users を upsert し、トークンを暗号化して保存し、新しいセッションを発行
+9. SPA（#projects 等）へ 302
 ```
 
-Redmine のパスワードはこの一連の処理の中でのみ使用し、保存しません。
+異常系:
 
-### 3.4 2 台目以降の端末
-
-すでにパスキーを持つ端末からログインし、設定画面から追加登録します。
-
-```
-1. 端末 A（登録済み）でログイン
-2. 設定画面で「別の端末を追加」を選択
-3. 6 桁の登録コードが発行される（有効期限 10 分、1 回限り）
-4. 端末 B でログイン画面の「登録コードで追加」を選択しコードを入力
-5. 端末 B で WebAuthn の登録セレモニーを実行
-6. 端末 B のパスキーが同じユーザーに紐付く
-```
+| 状況 | 挙動 |
+|---|---|
+| 利用者が同意を拒否（`error=access_denied`） | `#login?error=access_denied`。ログイン画面に理由を表示 |
+| `state` 不一致・期限切れ・使用済み | 401 相当として `#login?error=invalid_state`。詳細はログのみ |
+| コード交換が失敗 | `#login?error=exchange_failed`。上流が 5xx なら `upstream_error` |
+| Redmine の REST API が無効 | 認可要求が拒否される。`#login?error=redmine_unavailable` で管理者への連絡を案内 |
+| 利用者が Redmine で無効化・ロック済み | 認可段階で Redmine が拒否する |
 
 ### 3.5 セッション
 
@@ -189,56 +224,70 @@ IoTDesignTemplate の二軸タイムアウトを採用しつつ、モバイル�
 
 | 項目 | 値 | テンプレートとの差分 |
 |---|---|---|
-| 保持方法 | Cookie + データベース | テンプレートはインメモリ。パスキーは長寿命の認証手段であり、サーバー再起動で全員ログアウトは受け入れられないため永続化する |
+| 保持方法 | Cookie + データベース | テンプレートはインメモリ。リフレッシュトークンは長寿命であり、サーバー再起動で全員ログアウトは受け入れられないため永続化する |
 | Cookie 名 | `rmapp_session` | |
 | 属性 | `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/` | |
 | アイドルタイムアウト | 既定 168h（7 日） | テンプレートは 30 分 |
 | 絶対タイムアウト | 既定 720h（30 日） | テンプレートは 12 時間 |
-| 失効 | ログアウト、期限切れ、該当パスキーの削除 | |
+| 失効 | ログアウト、期限切れ、トークンの無効化 | |
+| 固定化対策 | ログイン成功のたびに新しいセッション ID を発行 | |
+
+セッションと OAuth トークンは別の寿命を持ちます。セッションが生きていても
+リフレッシュに失敗すれば §4.4 の再認可になります。逆にセッションが切れても
+トークンは残り、次回ログイン時に新しい組で置き換わります。
 
 CSRF 対策はテンプレートの方式をそのまま使います。**更新系リクエスト
 （POST / PUT / DELETE）には `X-Requested-With: XMLHttpRequest` ヘッダーを
-必須とし、無ければ拒否**します。トークン方式は採用しません。
+必須とし、無ければ拒否**します（OAuth の GET 遷移は §3.3 のとおり例外）。
+
+### 3.6 スコープ
+
+Redmine のスコープは権限名です。`rmapp` が機能として使うものだけを要求します
+（最小権限）。
+
+| 機能 | スコープ（案） |
+|---|---|
+| プロジェクト・チケット・メタ情報の参照 | `view_issues`（＋プロジェクト参照に必要なもの） |
+| チケット作成 | `add_issues` |
+| チケット更新 | `edit_issues` |
+| コメント追加 | `add_issue_notes` |
+| バージョン・メンバーの参照（カスタムフィールド解決） | `view_issues` ほか実機で確認（§14） |
+
+- 利用者の実効権限は「アプリのスコープ ∩ 同意したスコープ ∩ プロジェクトの
+  ロール」です。`rmapp` は権限を追加も緩和もしません（§11.2）。
+- `admin` スコープは要求しません。したがって `GET /custom_fields.json`
+  （管理者専用）は常に 403 になり、§6.4 のとおり生値表示へ degrade します。
+- スコープを増やす機能追加は、`redmine.oauth.scopes` の変更と**全利用者の
+  再認可**を伴います（Manual.md に手順化する）。
 
 ---
 
-## 4. API キーの管理
+## 4. OAuth トークンの管理
 
 ### 4.1 紐付けの単位
 
-要件は「ユーザーと端末ごとに保存し、紐付け可能」「スマホと PC の併用・混在」
-です。これを満たす設計として、**API キーはユーザー単位で 1 つ保持し、
-パスキーは端末単位で複数保持する**構成を採ります。
+トークンの組（アクセス + リフレッシュ）は**ユーザー単位で 1 組**保持します。
+端末ごとの認証器はなくなり、端末は Cookie セッション（§3.5）でのみ区別
+されます。
 
 ```
-ユーザー（1）
-  ├─ パスキー（N） ← 端末ごと。スマホ、PC、予備端末が混在
-  └─ Redmine API キー（1） ← 暗号化して保管
+ユーザー（1）  ← Redmine のユーザー ID が鍵
+  ├─ セッション（N） ← 端末・ブラウザごとの Cookie
+  └─ OAuth トークンの組（1） ← 暗号化して保管。スコープ付き
 ```
 
-理由は次のとおりです。
+どの端末からアクセスしても、Redmine 上の操作者・更新履歴は同じ人物として
+記録されます。新しい端末でログインすると、トークンの組は新しいものに置き換わり、
+他の端末のセッションはそのまま新しいトークンを使います。
 
-- Redmine が発行する API キーは、そもそもユーザーごとに 1 つです。
-- 端末ごとに別レコードを作ると、Redmine 側でキーを再生成したときに
-  すべての端末で個別に再紐付けが必要になります。
-- どの端末からアクセスしても、Redmine 上の操作者・更新履歴が同じ人物として
-  記録されるべきです。
-
-端末ごとの識別（最終アクセス日時の表示、端末単位の失効）は、パスキーの
-レコード側に属性として持たせます。
-
-### 4.2 端末レコードが持つ情報
+### 4.2 設定画面に出す情報
 
 | 項目 | 用途 |
 |---|---|
-| 表示名 | 「iPhone」「会社の PC」など。利用者が編集可能 |
-| 種別 | スマートフォン / PC / タブレット（User-Agent から推定、編集可能） |
-| 登録日時 | 設定画面での一覧表示 |
-| 最終利用日時 | 使われていない端末の把握 |
-| AAGUID | 認証器の種類の判別（任意） |
-
-設定画面ではこの一覧を表示し、端末単位で削除できます。削除された端末の
-セッションは即座に失効します。
+| Redmine 連携状態 | 有効 / 要再認可 |
+| 付与されたスコープ | 何を許可しているかの確認 |
+| 最終リフレッシュ日時 | 連携が生きているかの目安 |
+| セッション一覧（任意） | 他の端末のセッションの把握と個別ログアウト（将来） |
 
 ### 4.3 暗号化
 
@@ -246,21 +295,36 @@ CSRF 対策はテンプレートの方式をそのまま使います。**更新�
 - 鍵（KEK）はファイルで与えます（`secrets/kek.txt`）。RedmineDocker の
   「シークレットはファイル、平文環境変数やコミットは禁止」の慣例に
   合わせます。
-- ノンスはレコードごとに乱数生成し、暗号文と一緒に保存します。
-- 平文の API キーは、リクエスト処理中のメモリ上にのみ存在します。
-- API キーを保持する型は、JSON 化すると必ず `"[redacted]"` になるよう
-  実装します。
+- アクセストークンとリフレッシュトークンを**別々のノンス**で暗号化します。
+  ノンスは書き込みのたびに乱数生成します。
+- 平文のトークンは、リクエスト処理中のメモリ上にのみ存在します。
+- トークンを保持する型は、JSON 化すると必ず `"[redacted]"` になるよう
+  実装します。ログ・エラー・レスポンスに出さないことも同様です。
+- クライアントシークレットは `secrets/redmine_oauth_client_secret.txt` から
+  起動時に読み、メモリ以外に複製しません。
 
-### 4.4 キーが無効になった場合
+### 4.4 トークンの更新と無効化
 
-Redmine 側で API キーが再生成されると、中継したリクエストが 401 を返します。
+アクセストークンは短命（Redmine 既定 2 時間）です。中継の直前に期限を見て、
+期限が近ければ（残り 60 秒未満）リフレッシュします。上流が 401 を返した場合も
+1 回だけリフレッシュして再試行します。
 
-1. 該当ユーザーの API キーを「無効」としてマークする
-2. SPA には `code: "redmine_credential_invalid"` を返す
-3. SPA は再紐付け画面を表示し、Redmine の認証情報の再入力を求める
-4. 再入力に成功したら新しい API キーを保存する
+1. リフレッシュは**ユーザー単位で直列化**する（single-flight）。Redmine は
+   リフレッシュのたびにリフレッシュトークンを入れ替えるため、同じ古い
+   トークンで並行にリフレッシュすると連鎖が壊れ、`invalid_grant` になる。
+2. 新しい組を**先に永続化してから**使う。
+3. `invalid_grant`（利用者が Redmine で取り消した、管理者がアプリを削除した、
+   ローテーションを取りこぼした）の場合は組を「無効」としてマークする。
+4. SPA には `code: "redmine_credential_invalid"`（409）を返す。
+5. SPA は再認可画面を表示し、`POST /api/auth/reauthorize` が返す URL へ
+   遷移する。Redmine 側のセッションが生きていれば同意だけで戻れる。
+6. 再認可に成功したら新しい組を保存する。
 
-パスキーは失効させません。端末の再登録は不要です。
+リフレッシュの一時的な失敗（接続エラー、5xx）は組を無効化せず、502
+`upstream_error` を返します。
+
+ログアウト時は `POST /redmine/oauth/revoke`（アクセス + リフレッシュ）を
+ベストエフォートで呼びます。失敗してもローカルの削除は行います。
 
 ---
 
@@ -274,62 +338,57 @@ Redmine 側で API キーが再生成されると、中継したリクエスト�
 | カラム | 型 | 内容 |
 |---|---|---|
 | id | TEXT (UUID) | 主キー |
-| redmine_login | TEXT | Redmine のログイン名。一意 |
-| display_name | TEXT | 表示名 |
-| webauthn_user_handle | BLOB | WebAuthn のユーザーハンドル。一意 |
+| redmine_user_id | INTEGER | Redmine のユーザー ID。一意。同一性の鍵 |
+| redmine_login | TEXT | Redmine のログイン名（ログインのたびに更新） |
+| display_name | TEXT | 表示名（ログインのたびに更新） |
 | created_at / updated_at | TIMESTAMP | |
 
-### 5.2 credentials（パスキー）
+ログイン名は Redmine 側で変更されうるため、一意性の鍵には使いません。
 
-| カラム | 型 | 内容 |
-|---|---|---|
-| id | BLOB | 認証器の Credential ID。主キー |
-| user_id | TEXT | users.id への外部キー |
-| public_key | BLOB | 公開鍵 |
-| sign_count | INTEGER | 署名カウンタ |
-| aaguid | BLOB | 認証器の識別子 |
-| transports | TEXT | `internal`, `hybrid` など |
-| device_label | TEXT | 利用者が付ける表示名 |
-| device_kind | TEXT | `mobile` / `desktop` / `tablet` |
-| backup_eligible | BOOLEAN | 同期パスキーかどうか |
-| created_at / last_used_at | TIMESTAMP | |
-
-### 5.3 redmine_credentials
+### 5.2 oauth_tokens
 
 | カラム | 型 | 内容 |
 |---|---|---|
 | user_id | TEXT | 主キー。users.id への外部キー |
-| api_key_ciphertext | BLOB | 暗号化された API キー |
-| api_key_nonce | BLOB | GCM のノンス |
+| access_ciphertext / access_nonce | BLOB | 暗号化されたアクセストークンとそのノンス |
+| refresh_ciphertext / refresh_nonce | BLOB | 暗号化されたリフレッシュトークンとそのノンス |
 | key_version | INTEGER | 鍵のローテーション世代 |
+| scopes | TEXT | 付与されたスコープ（空白区切り） |
+| access_expires_at | TIMESTAMP | アクセストークンの有効期限 |
 | status | TEXT | `active` / `invalid` |
-| verified_at | TIMESTAMP | 最後に有効性を確認した時刻 |
+| refreshed_at | TIMESTAMP | 最後にリフレッシュまたは発行した時刻 |
 
-### 5.4 sessions
+### 5.3 sessions
 
 | カラム | 型 | 内容 |
 |---|---|---|
 | id | TEXT | セッション ID のハッシュ。主キー |
 | user_id | TEXT | users.id への外部キー |
-| credential_id | BLOB | ログインに使ったパスキー |
 | created_at / last_seen_at | TIMESTAMP | アイドルタイムアウトの判定に使用 |
 | absolute_expires_at | TIMESTAMP | 絶対タイムアウト |
 
 セッション ID は生の値を保存せず、ハッシュのみを保存します。
 
-### 5.5 enrollment_codes（端末追加コード）
+### 5.4 oauth_states
+
+進行中の認可要求の状態を保持します。有効期限は 10 分、1 回限り。期限切れは
+定期的に削除します。
 
 | カラム | 型 | 内容 |
 |---|---|---|
-| code_hash | TEXT | 主キー |
-| user_id | TEXT | users.id への外部キー |
+| state_hash | TEXT | `state` のハッシュ。主キー |
+| code_verifier_ciphertext / nonce | BLOB | PKCE の `code_verifier`（暗号化） |
+| return_to | TEXT | ログイン後に戻る画面ハッシュ（許可リスト済み） |
 | expires_at | TIMESTAMP | 発行から 10 分 |
 | used_at | TIMESTAMP | 使用済みなら非 NULL |
 
-### 5.6 webauthn_challenges
+### 5.5 廃止されるテーブル
 
-進行中のセレモニーの状態を保持します。有効期限は 5 分。期限切れは定期的に
-削除します。
+`credentials`（パスキー）、`redmine_credentials`（API キー）、
+`enrollment_codes`、`webauthn_challenges`。マイグレーションで削除します。
+**API キーの暗号文は削除時に残さない**（DROP のみ。バックアップ世代は
+Manual.md のとおり別途廃棄）。既存利用者は初回の OAuth ログインで
+`redmine_user_id` を埋めて既存の users 行に紐付けます（ログイン名一致）。
 
 ---
 
@@ -371,17 +430,17 @@ SPA が呼ぶ API は、Redmine の REST API をそのまま透過させるの�
 
 管理系（ユーザー作成、グループなど）は列挙しません。
 
-`/my/account.json` は**中継しません**。応答本文に Redmine の `api_key` が
-含まれ、これをブラウザへ渡すと §9-1（API キーをブラウザに渡さない）に
-反するためです。初回紐付けの本人確認では、この API をサーバー内部で
-（中継経由ではなく）直接叩き、取得したキーは暗号化保管のみに使います。
+`/my/account.json` は**中継せず、サーバー内部でも呼びません**。応答本文に
+Redmine の `api_key` が含まれ、API キー禁止（CLAUDE.md §9-1）に反するため
+です。利用者の特定には `GET /users/current.json`（Bearer）を、OAuth フローの
+内部処理（`internal/redmine`）からのみ呼びます。許可リストには載せません。
 
 ### 6.3 ヘッダーの取り扱い
 
 | ヘッダー | 扱い |
 |---|---|
-| `X-Redmine-API-Key` | サーバーが付与。受信したら 400 で拒否 |
-| `Authorization` | Redmine へ転送しない |
+| `X-Redmine-API-Key` | サーバーも付与しない。受信したら 400 で拒否 |
+| `Authorization` | 受信したものは Redmine へ転送しない。サーバーが `Bearer <利用者のアクセストークン>` を付与する |
 | `Cookie` | Redmine へ転送しない |
 | `X-Redmine-Switch-User` | 受信・送信ともに禁止 |
 | `X-Requested-With` | 更新系で必須（CSRF 対策。テンプレートの慣例） |
@@ -436,7 +495,7 @@ Redmine の定義ルール（必須可否・選択肢・長さ/上下限）を�
 | `forbidden` | 403 | 権限がない |
 | `not_found` | 404 | 対象がない、または許可リスト外 |
 | `invalid_request` | 400 | 入力が不正 |
-| `redmine_credential_invalid` | 409 | API キーが無効。再紐付けが必要 |
+| `redmine_credential_invalid` | 409 | OAuth トークンが無効（リフレッシュ失敗・取り消し）。再認可が必要（§4.4） |
 | `upstream_error` | 502 | Redmine 側の障害 |
 | `rate_limited` | 429 | 呼び出し過多 |
 | `internal_error` | 500 | サーバー内部エラー（パニック回復時など） |
@@ -496,11 +555,11 @@ Redmine の定義ルール（必須可否・選択肢・長さ/上下限）を�
 
 | key | 画面 | 内容 |
 |---|---|---|
-| `login` | ログイン | パスキー認証、登録コード、Redmine 認証によるブートストラップ |
+| `login` | ログイン | 「Redmine でログイン」（OAuth 認可へ遷移）。失敗理由の表示 |
 | `projects` | プロジェクト一覧 | 親子ツリー |
 | `issues` | チケット一覧 | 親子ツリー、フィルタ |
 | `issue-detail` | チケット詳細 | 属性、説明、添付、コメント |
-| `settings` | 設定 | 端末管理、Redmine 連携、テーマ |
+| `settings` | 設定 | Redmine 連携状態と再認可、付与スコープ、テーマ、ログアウト |
 
 ### 7.3 デザイントークン
 
@@ -576,18 +635,21 @@ Redmine のステータスは自由に定義できるため、固定の対応表
 ┌──────────────────────────┐
 │        ロゴ                │
 │   ┌──────────────────┐   │
-│   │  パスキーでログイン    │   │  ← --primary の主要ボタン
+│   │  Redmine でログイン  │   │  ← --primary の主要ボタン
 │   └──────────────────┘   │
-│   ──────── または ────────  │
-│   登録コードで端末を追加        │  ← テキストリンク
-│   Redmine の情報でログイン     │  ← テキストリンク
+│   Redmine の画面で認証します。     │
+│   パスワードはこのアプリに         │
+│   送られません。                │
 └──────────────────────────┘
 ```
 
-- パスキー非対応の環境ではボタンを無効化し、理由を文章で示します。
-- 認証中はボタンをローディング表示にし、多重押下を防ぎます。
-- 失敗はボタン直下にインライン表示します。トーストは補助的な通知にのみ
-  使います。
+- ボタンは `fetch` ではなく**ページ遷移**（`GET /api/auth/login`）です。
+- 同意拒否・`state` 不一致などで戻った場合は、`#login?error=<code>` の
+  コードに応じた説明をボタン直下にインライン表示します（§3.4 の表）。
+  トーストは補助的な通知にのみ使います。
+- 押下後は遷移完了までボタンをローディング表示にし、多重押下を防ぎます。
+- トークン無効（`redmine_credential_invalid`）では同じ画面ではなく、再認可の
+  案内（「Redmine との連携が切れました」＋再認可ボタン）を出します。
 
 ### 7.6 プロジェクト一覧
 
@@ -682,11 +744,10 @@ Redmine のステータスは自由に定義できるため、固定の対応表
 
 ### 7.9 設定画面
 
-- 登録済み端末の一覧（表示名、種別、登録日、最終利用日）と削除
-- 端末の追加（登録コードの発行）
-- Redmine 連携の状態表示と再紐付け
+- Redmine 連携の状態（有効 / 要再認可）、付与されたスコープ、最終リフレッシュ
+- 再認可ボタン（`POST /api/auth/reauthorize` → 返された URL へ遷移）
 - テーマ（ライト / ダーク。テンプレートのトップバー切替を踏襲）
-- ログアウト
+- ログアウト（Redmine 側のトークンも失効させる）
 
 ### 7.10 共通の振る舞い
 
@@ -714,9 +775,8 @@ app/
 ├── js/
 │   ├── app.js        SCREENS マニフェスト、ルーティング、起動処理
 │   ├── common/
-│   │   ├── shell.js  ナビ生成、ドロワー、テーマ、ログインオーバーレイ
+│   │   ├── shell.js  ナビ生成、ドロワー、テーマ、ログイン・再認可オーバーレイ
 │   │   ├── api.js    fetch ラッパー。X-Requested-With 付与。fetch 直呼び禁止
-│   │   ├── auth.js   WebAuthn セレモニー（base64url 変換、機能判定）
 │   │   ├── table.js  Tabulator ラッパー（dataTree 対応に拡張）
 │   │   ├── tree.js   フラット配列 → ツリー変換の純粋関数。DOM 禁止
 │   │   ├── modal.js  ハッシュ連動モーダル
@@ -736,7 +796,7 @@ app/
 | データ | 保存先 | 可否 |
 |---|---|---|
 | セッション | Cookie（サーバー管理） | 可 |
-| API キー | — | 不可。ブラウザに置かない |
+| OAuth トークン・API キー・クライアントシークレット | — | 不可。ブラウザに置かない |
 | テーマ / ツリー開閉 / フィルタ | localStorage | 可 |
 | コメント下書き | localStorage | 可（ログアウト時に消去） |
 
@@ -750,17 +810,20 @@ IoTDesignTemplate の `server/` の構成（`cmd/` + `internal/` +
 | パッケージ | 責務 | テンプレートとの関係 |
 |---|---|---|
 | `config` | config.yaml の読み込みと検証 | 踏襲 |
-| `auth` | WebAuthn セレモニー、セッション、レート制限 | パスワード認証を WebAuthn に置換。レート制限・タイムアウト設計は踏襲 |
-| `credential` | API キーの暗号化保管 | 新規 |
+| `auth` | OAuth ログイン（authorize / callback）、`state`・PKCE、セッション、レート制限 | パスワード認証を OAuth 2.0 認可コードフローに置換。レート制限・タイムアウト設計は踏襲 |
+| `credential` | OAuth トークン（アクセス + リフレッシュ）の暗号化保管、ユーザー単位 single-flight リフレッシュ | 新規 |
 | `proxy` | 中継、許可リスト、ヘッダー制御 | 新規 |
-| `redmine` | 型付き Redmine クライアント、集約、ツリー化 | 新規（datasource に相当） |
+| `redmine` | 型付き Redmine クライアント（OAuth の authorize URL 構築・トークン交換・失効を含む）、集約、ツリー化 | 新規（datasource に相当） |
 | `httpapi` | ハンドラ、ミドルウェア、エラー表現 | 踏襲 |
 | `store` | SQLite 永続化 | 新規（テンプレートはインメモリ） |
 | `webfs` | 静的アセット配信 | 踏襲 |
 
 **Go バージョンに関する差分**: テンプレートは組み込み機器へのデプロイの
 ため Go 1.17 互換を維持していますが、本サーバーはその対象外であり、
-WebAuthn ライブラリの要件もあるため **Go 1.25 以降**とします。
+依存ライブラリの要件もあるため **Go 1.25 以降**とします。OAuth クライアントは
+標準ライブラリ（`net/http`）で実装し、`golang.org/x/oauth2` は使いません
+（ユーザー単位 single-flight とローテーションの先行永続化を自前で制御する
+ため）。
 
 Redmine への接続:
 
@@ -769,8 +832,9 @@ Redmine への接続:
   再試行します。4xx は再試行しません。
 - 同時接続数に上限を設けます。
 
-ログは `log/slog` の構造化ログ。ボディ、Cookie、セッション ID、API キー、
-WebAuthn のチャレンジ・署名は記録しません。
+ログは `log/slog` の構造化ログ。ボディ、Cookie、セッション ID、OAuth トークン、
+認可コード、`state`、PKCE の `code_verifier`、クライアントシークレットは記録
+しません。
 
 ---
 
@@ -811,32 +875,35 @@ WebAuthn のチャレンジ・署名は記録しません。
 | `session.cookieName` | | `rmapp_session` | Cookie 名 |
 | `session.secretFile` | ✓ | | 署名鍵ファイル（`secrets/session_key.txt`） |
 
-### 10.3 パスキー（本プロジェクト固有）
+### 10.3 OAuth（本プロジェクト固有）
 
 | キー | 必須 | 既定値 | 内容 |
 |---|---|---|---|
-| `webauthn.rpId` | ✓ | | RP ID。公開ドメイン名のみ（スキーム・ポート不可） |
-| `webauthn.rpName` | ✓ | | 認証時に端末が表示する名称 |
-| `webauthn.origins` | ✓ | | 許可するオリジンの一覧（スキーム・ポート込み） |
-| `webauthn.userVerification` | | `required` | ユーザー検証の要求度 |
-| `webauthn.challengeTTLMinutes` | | `5` | チャレンジの有効期間 |
+| `redmine.oauth.clientId` | ✓ | | Redmine に登録したアプリケーションの Client ID |
+| `redmine.oauth.clientSecretFile` | ✓ | | Client Secret のファイル（`secrets/redmine_oauth_client_secret.txt`）。空ファイルは起動時エラー |
+| `redmine.oauth.redirectURI` | ✓ | | `<rmapp の公開 URL>/api/auth/callback`。Redmine の登録値と**完全一致**させる |
+| `redmine.oauth.scopes` | ✓ | | 要求するスコープの一覧（§3.6）。Redmine の登録値と一致させる |
+| `redmine.oauth.stateTTLMinutes` | | `10` | `state`・`code_verifier` の有効期間 |
+| `redmine.oauth.refreshSkewSeconds` | | `60` | 期限の何秒前からリフレッシュするか |
 
-`rpId` は運用開始後に変更できません。変更すると全パスキーが無効になります。
+`redirectURI` を変えるときは Redmine 側の登録も同時に更新します。
+`webauthn.*` と `features.passwordBootstrap` は廃止されました。
 
 ### 10.4 暗号化（本プロジェクト固有）
 
 | キー | 必須 | 既定値 | 内容 |
 |---|---|---|---|
-| `crypto.kekFile` | ✓ | | API キー暗号化鍵ファイル（`secrets/kek.txt`） |
+| `crypto.kekFile` | ✓ | | OAuth トークン暗号化鍵ファイル（`secrets/kek.txt`） |
 | `crypto.keyVersion` | | `1` | 鍵のローテーション世代 |
 
-`kek` を失うと、保存済みの API キーはすべて復号できません。
+`kek` を失うと、保存済みのトークンはすべて復号できません（全利用者が再ログインすれば復旧します）。
 
 ### 10.5 Redmine（本プロジェクト固有）
 
 | キー | 必須 | 既定値 | 内容 |
 |---|---|---|---|
-| `redmine.baseURL` | ✓ | | Redmine の起点 URL（開発: `http://localhost:8080`） |
+| `redmine.baseURL` | ✓ | | サーバー間通信（トークン交換・REST API）の起点 URL（開発: `http://localhost:8080`） |
+| `redmine.publicBaseURL` | | `redmine.baseURL` | **ブラウザ**から見える Redmine の起点 URL。`/oauth/authorize` への遷移に使う。コンテナ内部名で接続し公開 URL が別になる本番で必須 |
 | `redmine.subURI` | | `/redmine` | サブ URI。RedmineDocker の `REDMINE_SUBURI` と一致させる |
 | `redmine.timeoutSeconds` | | `10` | 1 リクエストのタイムアウト |
 | `redmine.maxRetries` | | `2` | 再試行回数 |
@@ -855,13 +922,14 @@ WebAuthn のチャレンジ・署名は記録しません。
 |---|---|---|---|
 | `features.mapEnabled` | | `false` | 地図機能（将来） |
 | `features.issueCreate` | | `true` | チケット作成の可否 |
-| `features.passwordBootstrap` | | `true` | Redmine 認証での初回紐付け |
 
 ### 10.8 シークレットの扱い
 
 RedmineDocker の慣例に合わせ、シークレットは**ファイルで持ちます**。
 `scripts/generate-secrets.sh` が `secrets/session_key.txt` と
-`secrets/kek.txt` を生成します（mode 600、git 管理外）。設定ファイルには
+`secrets/kek.txt` を生成し、`secrets/redmine_oauth_client_secret.txt` は
+空の置き場所だけを作ります（mode 600、git 管理外。値は Redmine が発行する
+ため生成できない）。設定ファイルには
 値そのものではなくファイルパスだけを書きます。
 
 ---
@@ -870,40 +938,43 @@ RedmineDocker の慣例に合わせ、シークレットは**ファイルで持�
 
 ### 11.1 通信
 
-- HTTPS を必須とします（パスキーの動作要件）。本番はホスト Apache が TLS を
+- HTTPS を必須とします（`Secure` Cookie と OAuth のリダイレクト URI の要件）。本番はホスト Apache が TLS を
   終端し HSTS を付与します（RedmineDocker と同じ二層構成の流儀）。
 - Content-Security-Policy を設定し、`script-src 'self'` とします。
   インラインスクリプトは FOUC 防止の 1 本のみをハッシュ指定で許可します。
 
 ### 11.2 権限
 
-Redmine 上の権限がそのまま反映されます。中継サーバーは権限を追加も緩和も
-しません。利用者が見られないプロジェクトは Redmine が返さないため一覧にも
+Redmine 上の権限がそのまま反映されます（実効権限は §3.6 のとおり
+スコープとロールの積）。中継サーバーは権限を追加も緩和もしません。利用者が見られないプロジェクトは Redmine が返さないため一覧にも
 現れません。
 
 ### 11.3 想定する脅威と対策
 
 | 脅威 | 対策 |
 |---|---|
-| XSS による API キー窃取 | ブラウザに API キーを置かない。CSP |
-| セッション窃取 | HttpOnly + Secure + SameSite。ID はハッシュ保存 |
-| CSRF | SameSite=Lax + 更新系での `X-Requested-With` 必須（テンプレート方式） |
+| XSS によるトークン窃取 | ブラウザにトークンを置かない。CSP |
+| セッション窃取 | HttpOnly + Secure + SameSite。ID はハッシュ保存。ログインごとに再発行 |
+| CSRF | SameSite=Lax + 更新系での `X-Requested-With` 必須。OAuth callback は `state` |
+| ログイン CSRF（攻撃者の認可コードを被害者に踏ませる） | `state` を発行元ブラウザのセッション前提で検証し、1 回限り・10 分。PKCE |
+| 認可コード横取り | PKCE `S256`、リダイレクト URI は設定固定（リクエストから組み立てない） |
+| オープンリダイレクト | ログイン後の戻り先は画面ハッシュの許可リストのみ |
 | 中継の悪用 | 許可リストによるパス制限 |
-| 総当たり | ログイン・登録コードのレート制限（5 回失敗 / 60 秒ロック） |
-| ユーザー名の推測 | ブートストラップ経路で不存在ユーザーにも同等の処理時間 |
-| 端末紛失 | 設定画面から該当端末のパスキーを即時削除 |
+| 総当たり・認可エンドポイントへの連打 | login / callback のレート制限（5 回失敗 / 60 秒ロック） |
+| DB / バックアップの漏洩 | トークンは AES-256-GCM。KEK は別ファイル。クライアントシークレットは DB に置かない |
+| リフレッシュの取りこぼしによる連携断 | ユーザー単位 single-flight、新しい組を先に永続化（§4.4） |
+| 利用者の離職・権限変更 | Redmine 側の取り消し・ロック・ロール変更が即座に効く（トークンは Redmine が検証する）。`rmapp` 側の特別対応は不要 |
 
-### 11.4 端末紛失への備え（未実装。フェーズ 7 はオーナー指示によりスキップ）
+### 11.4 端末紛失への備え
 
-以下は設計時点の意図であり、**実装されていません**（docs/plan.md フェーズ
-7「端末紛失対策とセキュリティ強化」はオーナーの指示によりスキップ済み。
-Setup.md・Manual.md は回復コードに触れず、再紐付けのみを案内しています）。
+端末固有の認証器を持たないため、専用の仕組みは不要になりました（旧設計の
+回復コード・2 台目登録の構想は廃止）。
 
-- ~~初回登録の完了時に、2 台目の登録を促す画面を必ず表示する~~
-- ~~回復コード（1 回限り、10 個）を発行し、保管を促す~~
-- ~~回復コードによるログイン後は新しいパスキーの登録を強制する~~
-- 最終手段として Redmine の認証情報による再紐付けを残す
-  （`features.passwordBootstrap`。これは実装済み）
+- 端末を紛失したら、利用者が Redmine の「マイアカウント」から
+  `RedminePocketGo` の認可を取り消す。トークンは即座に無効になり、紛失端末の
+  セッションは次の API 呼び出しで `redmine_credential_invalid` になる。
+- 管理者が Redmine でユーザーをロックしても同様。
+- `rmapp` 側の即時失効が必要な場合の運用は Manual.md に記載する。
 
 ---
 
@@ -960,6 +1031,8 @@ RedmineDocker には `redmine_gtt` プラグインと PostGIS が**最初から�
 
 | 項目 | 内容 |
 |---|---|
+| OAuth の実機確認（実装時に最初に検証） | ① 発行トークンで `GET /users/current.json` が通る最小スコープ。② 既存スコープ集合で `GET /projects.json` / `/issues.json` / `/enumerations/issue_priorities.json` / `/trackers.json` / `/issue_statuses.json` / `memberships` / `versions` が通るか。③ 認可要求の `code_challenge` を Redmine 7.0.2 が受理・検証するか。④ リフレッシュ時に旧リフレッシュトークンが即失効するか（Doorkeeper 既定の挙動）。⑤ Redmine 6.1.x で報告のあったスコープ未適用の書き込み（Redmine チケット管理上の不具合）が 7.0.2 で解消済みか。解消していなければ書き込みの可否はロールのみで決まる前提で設計を見直す |
+| E2E / スタック試験でのトークン調達 | Redmine のパスワードを使わず、`rails runner` で `Doorkeeper::Application` と `Doorkeeper::AccessToken` を作る方式で、ブラウザを介さず試験用の組を得る。管理者の API キーは使わない（`scripts/redmine-seed-testdata.sh` の書き換えを含む） |
 | 添付ファイルのアップロード | Redmine は 2 段階（トークン取得 → 本体送信）のため、中継方式を別途検討する |
 | 全文検索 | Redmine の検索 API を使うか、絞り込みのみに留めるか |
 | 通知 | Web Push の採用可否。iOS の制約を実機で確認してから判断する |
