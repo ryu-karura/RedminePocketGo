@@ -135,8 +135,20 @@ type Manager struct {
 	now               func() time.Time
 	persistRetryDelay time.Duration
 
+	// save は新しい組の保存口（既定は vault.SaveTokens。テストで差し替える）。
+	save func(ctx context.Context, userID string, ts *redmine.TokenSet) error
+
 	mu      sync.Mutex
 	flights map[string]*flight
+	// pending は「Redmine は回転済みだが保存に失敗した」新しい組。DB の旧い
+	// リフレッシュトークンはもう使えないため、メモリに保持して次の呼び出しで
+	// 保存し直す（旧い組で再リフレッシュすると invalid_grant で再認可を強いる）。
+	pending map[string]*pendingTokens
+}
+
+type pendingTokens struct {
+	from string // 回転前のリフレッシュトークン（DB の組と一致するときだけ有効）
+	ts   *redmine.TokenSet
 }
 
 type flight struct {
@@ -158,6 +170,8 @@ func NewManager(v *Vault, oauth Refresher, skew time.Duration) *Manager {
 		vault: v, oauth: oauth, skew: skew,
 		now: time.Now, persistRetryDelay: 100 * time.Millisecond,
 		flights: map[string]*flight{},
+		pending: map[string]*pendingTokens{},
+		save:    v.SaveTokens,
 	}
 }
 
@@ -236,6 +250,25 @@ func (m *Manager) doRefresh(ctx context.Context, userID, staleAccess string) (st
 		return cur.Access(), nil
 	}
 
+	// 前回の回転の保存に失敗していれば、Redmine を呼び直さず保存をやり直す。
+	// DB の組が回転前のものと違うなら（再ログイン・ログアウト等）、保持は古い。
+	m.mu.Lock()
+	p := m.pending[userID]
+	if p != nil && p.from != cur.Refresh() {
+		delete(m.pending, userID)
+		p = nil
+	}
+	m.mu.Unlock()
+	if p != nil {
+		if err := m.persist(ctx, userID, p.ts); err != nil {
+			return "", err
+		}
+		m.mu.Lock()
+		delete(m.pending, userID)
+		m.mu.Unlock()
+		return p.ts.AccessToken, nil
+	}
+
 	ts, err := m.oauth.Refresh(ctx, cur.Refresh())
 	switch {
 	case err == nil:
@@ -252,15 +285,26 @@ func (m *Manager) doRefresh(ctx context.Context, userID, staleAccess string) (st
 	}
 
 	// 先に永続化してから使う。
+	if err := m.persist(ctx, userID, ts); err != nil {
+		m.mu.Lock()
+		m.pending[userID] = &pendingTokens{from: cur.Refresh(), ts: ts}
+		m.mu.Unlock()
+		return "", err
+	}
+	return ts.AccessToken, nil
+}
+
+// persist は新しい組を保存する（数回再試行）。失敗は ErrPersistFailed。
+func (m *Manager) persist(ctx context.Context, userID string, ts *redmine.TokenSet) error {
 	var saveErr error
 	for i := 0; i < persistAttempts; i++ {
-		if saveErr = m.vault.SaveTokens(ctx, userID, ts); saveErr == nil {
-			return ts.AccessToken, nil
+		if saveErr = m.save(ctx, userID, ts); saveErr == nil {
+			return nil
 		}
 		time.Sleep(m.persistRetryDelay)
 	}
 	slog.Error("rotated OAuth tokens could not be persisted", "userID", userID, "error", saveErr)
-	return "", ErrPersistFailed
+	return ErrPersistFailed
 }
 
 // MarkInvalid は更新したトークンまで上流に拒否されたときに組を無効にする
