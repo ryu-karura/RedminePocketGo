@@ -59,6 +59,8 @@ type OAuthLoginDeps struct {
 	Identity IdentityProvider
 	Sessions *Sessions
 	StateTTL time.Duration
+	// Locks はログアウト後始末（GrantCleaner）と共有する利用者単位の排他。
+	Locks *UserLocks
 }
 
 // OAuthLogin はログインの開始（Begin）と完了（Complete）。
@@ -153,6 +155,10 @@ func (l *OAuthLogin) Complete(ctx context.Context, code, state string) (sessionT
 	if err != nil {
 		return "", "", err
 	}
+	// 組の保存からセッション発行までを、同じ利用者のログアウト後始末と直列化する
+	// （後始末が保存直後の新しい組を「最後のセッションの分」と誤って失効しない）。
+	unlock := l.d.Locks.Lock(user.ID)
+	defer unlock()
 	if err := l.d.Vault.SaveTokens(ctx, user.ID, ts); err != nil {
 		return "", "", err
 	}

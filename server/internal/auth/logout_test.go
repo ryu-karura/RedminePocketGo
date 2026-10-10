@@ -40,7 +40,7 @@ func newCleanerEnv(t *testing.T) *cleanerEnv {
 		t.Fatal(err)
 	}
 	rev := &fakeRevoker{}
-	c := &GrantCleaner{Store: e.st, Vault: e.vault, OAuth: rev}
+	c := &GrantCleaner{Store: e.st, Vault: e.vault, OAuth: rev, Locks: e.locks}
 	c.now = func() time.Time { return loginT0 }
 	return &cleanerEnv{loginEnv: e, rev: rev, cleaner: c, userID: u.ID}
 }

@@ -149,11 +149,14 @@ func run(out io.Writer, args []string) error {
 	})
 	tokens := credential.NewManager(vault, rmOAuth, time.Duration(cfg.Redmine.OAuth.RefreshSkewSeconds)*time.Second)
 
+	// ログイン完了とログアウト後始末が同じ利用者の組を取り合わないための排他。
+	userLocks := auth.NewUserLocks()
+
 	// 認証: OAuth ログイン / コールバック（Design.md §3.3）と現在セッションの API。
 	stateTTL := time.Duration(cfg.Redmine.OAuth.StateTTLMinutes) * time.Minute
 	(&httpapi.OAuthHandler{
 		Login: auth.NewOAuthLogin(auth.OAuthLoginDeps{
-			Store: st, Vault: vault, OAuth: rmOAuth, Identity: rmClient, Sessions: sessions, StateTTL: stateTTL,
+			Store: st, Vault: vault, OAuth: rmOAuth, Identity: rmClient, Sessions: sessions, StateTTL: stateTTL, Locks: userLocks,
 		}),
 		Sessions:          sessions,
 		Limiter:           auth.NewRateLimiter(5, 60*time.Second),
@@ -170,7 +173,7 @@ func run(out io.Writer, args []string) error {
 		Sessions: sessions,
 		Users:    st,
 		Grants:   st,
-		Cleanup:  &auth.GrantCleaner{Store: st, Vault: vault, OAuth: rmOAuth, Logger: logger},
+		Cleanup:  &auth.GrantCleaner{Store: st, Vault: vault, OAuth: rmOAuth, Logger: logger, Locks: userLocks},
 		Logger:   logger,
 
 		CookieName: cfg.Session.CookieName,

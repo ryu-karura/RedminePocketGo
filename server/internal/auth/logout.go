@@ -23,6 +23,8 @@ type GrantCleaner struct {
 	Vault  *credential.Vault
 	OAuth  Revoker
 	Logger *slog.Logger
+	// Locks はログイン（OAuthLogin.Complete）と共有する利用者単位の排他。
+	Locks *UserLocks
 
 	now func() time.Time
 }
@@ -44,38 +46,56 @@ func (c *GrantCleaner) AfterLogout(ctx context.Context, userID string) {
 	if c.now != nil {
 		now = c.now
 	}
-	n, err := c.Store.CountActiveSessions(ctx, userID, now())
+	tokens := c.takeTokensIfLastSession(ctx, userID, now())
+	if tokens == nil {
+		return
+	}
+	// 失効要求は、リフレッシュ → アクセスの順（リフレッシュを先に殺す）。
+	// ロックの外で送る（Redmine が遅くても、同じ利用者のログインを待たせない）。
+	for _, t := range []struct{ token, hint string }{
+		{tokens.Refresh(), "refresh_token"},
+		{tokens.Access(), "access_token"},
+	} {
+		rctx, cancel := context.WithTimeout(ctx, revokeTimeout)
+		if err := c.OAuth.Revoke(rctx, t.token, t.hint); err != nil {
+			// 届かなくてもローカルは消してある。Redmine 側の「マイアカウント」から
+			// 手動で取り消せる（Manual.md）。
+			c.logger().Warn("logout cleanup: remote revoke failed", "hint", t.hint, "error", err)
+		}
+		cancel()
+	}
+}
+
+// takeTokensIfLastSession は、他に有効なセッションが無いときだけ利用者の組を
+// ローカルから取り出して削除し、失効要求用に返す。確認から削除までをログインと
+// 同じ利用者ロックの中で行う。送るべき失効が無ければ nil を返す（他の端末が
+// 使用中・組が無い・既に無効・読み出し失敗）。
+func (c *GrantCleaner) takeTokensIfLastSession(ctx context.Context, userID string, now time.Time) *credential.Tokens {
+	unlock := c.Locks.Lock(userID)
+	defer unlock()
+
+	n, err := c.Store.CountActiveSessions(ctx, userID, now)
 	if err != nil {
 		// 数えられない時は、他の端末を巻き込まないよう何もしない側に倒す。
 		c.logger().Error("logout cleanup: counting sessions failed", "error", err)
-		return
+		return nil
 	}
 	if n > 0 {
-		return
+		return nil
 	}
 
 	tokens, err := c.Vault.LoadTokens(ctx, userID)
 	switch {
 	case err == nil:
-		// 失効要求は、リフレッシュ → アクセスの順（リフレッシュを先に殺す）。
-		for _, t := range []struct{ token, hint string }{
-			{tokens.Refresh(), "refresh_token"},
-			{tokens.Access(), "access_token"},
-		} {
-			rctx, cancel := context.WithTimeout(ctx, revokeTimeout)
-			if err := c.OAuth.Revoke(rctx, t.token, t.hint); err != nil {
-				// 届かなくてもローカルは消す。Redmine 側の「マイアカウント」から
-				// 手動で取り消せる（Manual.md）。
-				c.logger().Warn("logout cleanup: remote revoke failed", "hint", t.hint, "error", err)
-			}
-			cancel()
-		}
 	case errors.Is(err, credential.ErrNoCredential), errors.Is(err, credential.ErrCredentialInvalid):
-		// 無い／既に無効。送る失効要求は無い。
+		// 無い／既に無効。送る失効要求は無いが、行は消す。
+		tokens = nil
 	default:
 		c.logger().Error("logout cleanup: loading tokens failed", "error", err)
+		tokens = nil
 	}
 	if err := c.Store.DeleteOAuthTokens(ctx, userID); err != nil {
 		c.logger().Error("logout cleanup: deleting local tokens failed", "error", err)
 	}
+	return tokens
 }
