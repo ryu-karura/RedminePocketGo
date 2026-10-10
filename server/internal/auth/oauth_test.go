@@ -56,6 +56,7 @@ type loginEnv struct {
 	vault    *credential.Vault
 	sessions *Sessions
 	locks    *UserLocks
+	rev      *fakeRevoker
 	as       *fakeAuthServer
 	id       *fakeIdentity
 	now      time.Time
@@ -78,7 +79,7 @@ func newLoginEnv(t *testing.T) *loginEnv {
 		t.Fatal(err)
 	}
 	sessions := NewSessions(st, Config{IdleTimeout: time.Hour, AbsoluteTimeout: 24 * time.Hour, CookieName: "s"})
-	e := &loginEnv{st: st, vault: vault, sessions: sessions, locks: NewUserLocks(), now: loginT0}
+	e := &loginEnv{st: st, vault: vault, sessions: sessions, locks: NewUserLocks(), rev: &fakeRevoker{}, now: loginT0}
 	e.as = &fakeAuthServer{exchangeFn: func(context.Context, string, string) (*redmine.TokenSet, error) {
 		return &redmine.TokenSet{
 			AccessToken: "AT", RefreshToken: "RT",
@@ -87,7 +88,7 @@ func newLoginEnv(t *testing.T) *loginEnv {
 	}}
 	e.id = &fakeIdentity{user: &redmine.CurrentUser{ID: 5, Login: "alice", DisplayName: "Alice A"}}
 	e.svc = NewOAuthLogin(OAuthLoginDeps{
-		Store: st, Vault: vault, OAuth: e.as, Identity: e.id, Sessions: sessions, StateTTL: 10 * time.Minute, Locks: e.locks,
+		Store: st, Vault: vault, OAuth: e.as, Identity: e.id, Sessions: sessions, StateTTL: 10 * time.Minute, Locks: e.locks, Revoker: e.rev,
 	})
 	e.svc.now = func() time.Time { return e.now }
 	return e

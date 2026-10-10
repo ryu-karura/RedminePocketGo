@@ -133,3 +133,17 @@ func (s *Store) CountActiveSessions(ctx context.Context, userID string, now time
 	}
 	return n, nil
 }
+
+// CountLiveSessions は利用者がまだ使えるセッション数を返す（絶対期限内で、
+// かつ最終アクセスが idleCutoff より新しいもの）。無操作で失効済みのセッションは
+// 数えない。トークンの失効可否の判定に使う。
+func (s *Store) CountLiveSessions(ctx context.Context, userID string, now, idleCutoff time.Time) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sessions WHERE user_id = ? AND absolute_expires_at > ? AND last_seen_at > ?",
+		userID, fmtTime(now), fmtTime(idleCutoff),
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: セッション数の取得に失敗しました: %w", err)
+	}
+	return n, nil
+}

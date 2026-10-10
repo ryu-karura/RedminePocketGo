@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"time"
 
@@ -61,6 +62,10 @@ type OAuthLoginDeps struct {
 	StateTTL time.Duration
 	// Locks はログアウト後始末（GrantCleaner）と共有する利用者単位の排他。
 	Locks *UserLocks
+	// Revoker は不要になった付与の Redmine 側失効（ベストエフォート）。nil なら
+	// 失効要求は送らない。
+	Revoker Revoker
+	Logger  *slog.Logger
 }
 
 // OAuthLogin はログインの開始（Begin）と完了（Complete）。
@@ -146,6 +151,14 @@ func (l *OAuthLogin) Complete(ctx context.Context, code, state string) (sessionT
 	if err != nil {
 		return "", "", classifyLoginError(err)
 	}
+	// ここから先で失敗すると、発行済みの組がどこにも保存されず Redmine 側に
+	// 使われない付与として残る。保存できなかった組は失効させる。
+	stored := false
+	defer func() {
+		if !stored {
+			revokeGrant(ctx, l.d.Revoker, l.logger(), ts.AccessToken, ts.RefreshToken)
+		}
+	}()
 	cu, err := l.d.Identity.CurrentUser(ctx, ts.AccessToken)
 	if err != nil {
 		return "", "", classifyLoginError(err)
@@ -155,13 +168,28 @@ func (l *OAuthLogin) Complete(ctx context.Context, code, state string) (sessionT
 	if err != nil {
 		return "", "", err
 	}
+
+	// 失効は、ロックを放したあとに送る（defer は後入れ先出し）。
+	var replaced *credential.Tokens
+	defer func() {
+		if replaced != nil {
+			revokeGrant(ctx, l.d.Revoker, l.logger(), replaced.Access(), replaced.Refresh())
+		}
+	}()
+
 	// 組の保存からセッション発行までを、同じ利用者のログアウト後始末と直列化する
 	// （後始末が保存直後の新しい組を「最後のセッションの分」と誤って失効しない）。
 	unlock := l.d.Locks.Lock(user.ID)
 	defer unlock()
+	// 再ログインで置き換わる旧い組。上書きすると Redmine 側で生き残るため失効させる。
+	old, oldErr := l.d.Vault.LoadTokens(ctx, user.ID)
 	if err := l.d.Vault.SaveTokens(ctx, user.ID, ts); err != nil {
-		return "", "", err
+		return "", "", err // 旧い組はそのまま残るので失効させない
 	}
+	if oldErr == nil {
+		replaced = old
+	}
+	stored = true
 	token, err := l.d.Sessions.Issue(ctx, user.ID)
 	if err != nil {
 		return "", "", err
@@ -182,4 +210,11 @@ func classifyLoginError(err error) error {
 	}
 	// 想定外（キャンセル・内部エラー等）は分類せず素通しして 500 にする。
 	return err
+}
+
+func (l *OAuthLogin) logger() *slog.Logger {
+	if l.d.Logger != nil {
+		return l.d.Logger
+	}
+	return slog.Default()
 }
