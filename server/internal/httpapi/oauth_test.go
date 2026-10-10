@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -54,11 +55,12 @@ func (s *oauthSessions) ClearCookie() *http.Cookie {
 type oauthLimiter struct {
 	allow            bool
 	fails, successes int
+	lastKey          string
 }
 
-func (l *oauthLimiter) Allow(string) bool { return l.allow }
-func (l *oauthLimiter) Fail(string)       { l.fails++ }
-func (l *oauthLimiter) Succeed(string)    { l.successes++ }
+func (l *oauthLimiter) Allow(key string) bool { l.lastKey = key; return l.allow }
+func (l *oauthLimiter) Fail(string)           { l.fails++ }
+func (l *oauthLimiter) Succeed(string)        { l.successes++ }
 
 type oauthEnv struct {
 	h    *OAuthHandler
@@ -297,5 +299,62 @@ func TestOAuthCallbackNeverRedirectsToAnOffSiteReturnTo(t *testing.T) {
 		if got := rr.Header().Get("Location"); got != "/#projects" {
 			t.Errorf("returnTo %q: Location = %q; want /#projects", bad, got)
 		}
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	loopback := mustCIDRs(t, "127.0.0.0/8", "::1/128")
+	tests := []struct {
+		name    string
+		remote  string
+		xff     string
+		trusted []*net.IPNet
+		want    string
+	}{
+		{"trusted proxy: rightmost XFF is the client", "127.0.0.1:5000", "6.6.6.6, 203.0.113.9", loopback, "203.0.113.9"},
+		{"trusted proxy, no XFF: falls back to peer", "127.0.0.1:5000", "", loopback, "127.0.0.1"},
+		{"untrusted peer: XFF is ignored", "198.51.100.4:5000", "203.0.113.9", loopback, "198.51.100.4"},
+		{"no trusted proxies configured: XFF ignored", "127.0.0.1:5000", "203.0.113.9", nil, "127.0.0.1"},
+		{"trusted proxy, blank rightmost entry: falls back to peer", "::1", "203.0.113.9, ", loopback, "::1"},
+		{"trusted proxy, garbage rightmost entry: falls back to peer", "127.0.0.1:5000", "203.0.113.9, nonsense", loopback, "127.0.0.1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/", nil)
+			r.RemoteAddr = tc.remote
+			if tc.xff != "" {
+				r.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			if got := clientIP(r, tc.trusted); got != tc.want {
+				t.Errorf("clientIP = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func mustCIDRs(t *testing.T, cidrs ...string) []*net.IPNet {
+	t.Helper()
+	var out []*net.IPNet
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// 直接つなげる攻撃者が X-Forwarded-For を差し替えても、レート制限の
+// キーは自分の接続元のまま（他人の IP のロック・自分のロック回避ができない）。
+func TestOAuthLimiterKeyIgnoresSpoofedXFFFromUntrustedPeer(t *testing.T) {
+	e := newOAuthEnv()
+	e.h.TrustedProxies = mustCIDRs(t, "127.0.0.0/8")
+	req := httptest.NewRequest("GET", "/api/auth/login", nil)
+	req.RemoteAddr = "198.51.100.4:4000"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	e.mux.ServeHTTP(httptest.NewRecorder(), req)
+	if e.lim.lastKey != "198.51.100.4" {
+		t.Errorf("limiter key = %q; want the peer address 198.51.100.4", e.lim.lastKey)
 	}
 }

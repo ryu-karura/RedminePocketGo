@@ -55,23 +55,36 @@ type AuthHandler struct {
 	LoginPath string
 }
 
-// limiterKey はレート制限のキー（クライアント IP 単位）。本アプリは
-// 単一の信頼できるリバースプロキシ（Host Apache。CLAUDE.md §1）の背後に
-// 置かれるため、RemoteAddr は常にプロキシのアドレスになる。プロキシが
-// 付与する X-Forwarded-For の最右要素が実クライアント IP であり、
-// クライアントが偽装した左側の値には影響されない。
-func limiterKey(r *http.Request) string {
+// clientIP はレート制限のキー（クライアント IP 単位）。直接の接続元が
+// 信頼するプロキシ（Host Apache。CLAUDE.md §1）のときだけ、プロキシが
+// 付与した X-Forwarded-For の最右要素を実クライアント IP とする。それ以外
+// （プロキシを経由せず直接つないできた相手）のヘッダーは偽装できるため
+// 無視し、接続元アドレスをそのまま使う。
+func clientIP(r *http.Request, trusted []*net.IPNet) string {
+	peer := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(peer); err == nil {
+		peer = host
+	}
+	pip := net.ParseIP(peer)
+	if pip == nil || !ipInNets(pip, trusted) {
+		return peer
+	}
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
-		if ip := strings.TrimSpace(parts[len(parts)-1]); ip != "" {
-			return ip
+		if ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); ip != nil {
+			return ip.String()
 		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+	return peer
+}
+
+func ipInNets(ip net.IP, nets []*net.IPNet) bool {
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
 	}
-	return host
+	return false
 }
 
 // RegisterRoutes は認証関連ルートを mux に登録する。

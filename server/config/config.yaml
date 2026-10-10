@@ -14,6 +14,9 @@ webroot: "../app"      # SPA の配置先。server/ をカレントディレク�
 serveStatic: true      # SPA を本サーバーから配信するか
 noCache: true          # キャッシュ抑止ヘッダーを全レスポンスに付与するか
 logLevel: "info"       # debug / info / warn / error
+trustedProxies:        # X-Forwarded-For を信用する直接の接続元（CIDR か単一 IP）。リバース
+  - "127.0.0.0/8"      # プロキシ（Host Apache）のアドレスを列挙する。空配列 [] ならヘッダーを
+  - "::1/128"          # 一切信用しない（レート制限は接続元アドレス単位になる）
 
 # ---- セッション（二軸タイムアウト）----
 session:

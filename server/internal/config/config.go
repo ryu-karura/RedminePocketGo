@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -21,6 +22,12 @@ type Config struct {
 	ServeStatic bool   `yaml:"serveStatic"`
 	NoCache     bool   `yaml:"noCache"`
 	LogLevel    string `yaml:"logLevel"`
+	// TrustedProxies は X-Forwarded-For を信用してよい直接の接続元（CIDR か
+	// 単一 IP）。リバースプロキシ（Host Apache）のアドレスを列挙する。
+	// 空ならヘッダーを一切信用しない。既定はループバックのみ。
+	TrustedProxies []string `yaml:"trustedProxies"`
+
+	trustedNets []*net.IPNet
 
 	Session  Session  `yaml:"session"`
 	Crypto   Crypto   `yaml:"crypto"`
@@ -28,6 +35,9 @@ type Config struct {
 	Database Database `yaml:"database"`
 	Features Features `yaml:"features"`
 }
+
+// TrustedProxyNets は検証済みの trustedProxies を返す（Load 後に有効）。
+func (c *Config) TrustedProxyNets() []*net.IPNet { return c.trustedNets }
 
 type Session struct {
 	IdleTimeoutHours     int    `yaml:"idleTimeoutHours"`
@@ -116,6 +126,10 @@ var setters = map[string]func(*Config, string) error{
 		return setBool(&c.ServeStatic, v)
 	},
 	"noCache": func(c *Config, v string) error { return setBool(&c.NoCache, v) },
+	"trustedProxies": func(c *Config, v string) error {
+		c.TrustedProxies = splitList(v)
+		return nil
+	},
 
 	"session.idleTimeoutHours":     func(c *Config, v string) error { return setInt(&c.Session.IdleTimeoutHours, v) },
 	"session.absoluteTimeoutHours": func(c *Config, v string) error { return setInt(&c.Session.AbsoluteTimeoutHours, v) },
@@ -202,6 +216,8 @@ func defaults() *Config {
 		ServeStatic: true,
 		NoCache:     true,
 		LogLevel:    "info",
+		// Host Apache は同一ホストのループバックから中継する想定。
+		TrustedProxies: []string{"127.0.0.0/8", "::1/128"},
 		Session: Session{
 			IdleTimeoutHours:     168,
 			AbsoluteTimeoutHours: 720,
@@ -255,6 +271,12 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("config: logLevel %q は不正です（debug / info / warn / error）", c.LogLevel)
 	}
+
+	nets, err := parseTrustedProxies(c.TrustedProxies)
+	if err != nil {
+		return err
+	}
+	c.trustedNets = nets
 
 	if u, err := url.Parse(c.Redmine.BaseURL); err != nil || u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("config: redmine.baseURL %q は URL として不正です", c.Redmine.BaseURL)
@@ -368,4 +390,30 @@ func splitList(v string) []string {
 		}
 	}
 	return out
+}
+
+// parseTrustedProxies は CIDR または単一 IP の一覧を IPNet に変換する。
+func parseTrustedProxies(entries []string) ([]*net.IPNet, error) {
+	var out []*net.IPNet
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if !strings.Contains(e, "/") {
+			ip := net.ParseIP(e)
+			if ip == nil {
+				return nil, fmt.Errorf("config: trustedProxies の要素 %q は IP でも CIDR でもありません", e)
+			}
+			bits := 128
+			if ip.To4() != nil {
+				bits = 32
+			}
+			out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			continue
+		}
+		_, n, err := net.ParseCIDR(e)
+		if err != nil {
+			return nil, fmt.Errorf("config: trustedProxies の要素 %q は CIDR として不正です: %w", e, err)
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }

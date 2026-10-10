@@ -158,6 +158,7 @@ func run(out io.Writer, args []string) error {
 		Sessions:          sessions,
 		Limiter:           auth.NewRateLimiter(5, 60*time.Second),
 		Logger:            logger,
+		TrustedProxies:    cfg.TrustedProxyNets(),
 		SessionCookieName: cfg.Session.CookieName,
 		StateCookieName:   "rmapp_oauth_state",
 		StateCookiePath:   cfg.BaseURL + "/api/auth/",

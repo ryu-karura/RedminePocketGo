@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -327,4 +328,67 @@ func TestRemovedKeysAreRejected(t *testing.T) {
 	if _, err := Load(writeConfig(t, validYAML), map[string]string{"webauthn.rpId": "x"}, env); err == nil {
 		t.Error("override of removed key webauthn.rpId accepted")
 	}
+}
+
+func TestTrustedProxies(t *testing.T) {
+	t.Run("default is loopback only", func(t *testing.T) {
+		cfg, err := Load(writeConfig(t, validYAML), nil, noEnv)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		nets := cfg.TrustedProxyNets()
+		if len(nets) != 2 {
+			t.Fatalf("TrustedProxyNets = %v; want 127.0.0.0/8 and ::1/128", nets)
+		}
+		for ip, want := range map[string]bool{"127.0.0.1": true, "::1": true, "192.0.2.1": false} {
+			got := false
+			for _, n := range nets {
+				if n.Contains(net.ParseIP(ip)) {
+					got = true
+				}
+			}
+			if got != want {
+				t.Errorf("%s trusted = %v; want %v", ip, got, want)
+			}
+		}
+	})
+	t.Run("explicit list, bare IPs allowed", func(t *testing.T) {
+		cfg, err := Load(writeConfig(t, validYAML+"trustedProxies: [\"10.0.0.0/8\", \"192.0.2.7\"]\n"), nil, noEnv)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := len(cfg.TrustedProxyNets()); got != 2 {
+			t.Fatalf("len = %d; want 2", got)
+		}
+	})
+	t.Run("empty list disables trust", func(t *testing.T) {
+		cfg, err := Load(writeConfig(t, validYAML+"trustedProxies: []\n"), nil, noEnv)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := len(cfg.TrustedProxyNets()); got != 0 {
+			t.Fatalf("len = %d; want 0", got)
+		}
+	})
+	t.Run("env override", func(t *testing.T) {
+		env := func(k string) (string, bool) {
+			if k == "RMAPP_TRUSTEDPROXIES" {
+				return "10.1.0.0/16, 172.16.0.1", true
+			}
+			return "", false
+		}
+		cfg, err := Load(writeConfig(t, validYAML), nil, env)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := len(cfg.TrustedProxyNets()); got != 2 {
+			t.Fatalf("len = %d; want 2", got)
+		}
+	})
+	t.Run("invalid entry names the key", func(t *testing.T) {
+		_, err := Load(writeConfig(t, validYAML+"trustedProxies: [\"not-an-ip\"]\n"), nil, noEnv)
+		if err == nil || !strings.Contains(err.Error(), "trustedProxies") {
+			t.Fatalf("err = %v; want error naming trustedProxies", err)
+		}
+	})
 }
