@@ -437,3 +437,98 @@ func TestNonceIsFreshOnEverySave(t *testing.T) {
 		seen[string(n)] = true
 	}
 }
+
+// 回転は成功したが保存に失敗した場合、新しい組はメモリに保持して次の呼び出しで
+// 保存し直す。旧い組で再度リフレッシュすると invalid_grant になり、不要な
+// 再認可を強いてしまうため、Redmine を再び呼んではならない。
+func TestManagerRecoversPersistFailureOnNextCall(t *testing.T) {
+	r := &fakeRefresher{fn: func(_ context.Context, refresh string, n int) (*redmine.TokenSet, error) {
+		if n > 1 {
+			return nil, redmine.ErrInvalidGrant // 旧い組での 2 回目は拒否される
+		}
+		return tokenSet("A1", "R1", t0.Add(time.Hour)), nil
+	}}
+	m, v, uid := newManager(t, r)
+	m.persistRetryDelay = time.Millisecond
+	bg := context.Background()
+	if err := v.SaveTokens(bg, uid, tokenSet("A0", "R0", t0.Add(-time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	failing := true
+	m.save = func(ctx context.Context, userID string, ts *redmine.TokenSet) error {
+		if failing {
+			return errors.New("disk full")
+		}
+		return v.SaveTokens(ctx, userID, ts)
+	}
+
+	if _, err := m.AccessToken(bg, uid); !errors.Is(err, ErrPersistFailed) {
+		t.Fatalf("first call err = %v; want ErrPersistFailed", err)
+	}
+	failing = false
+	got, err := m.AccessToken(bg, uid)
+	if err != nil || got != "A1" {
+		t.Fatalf("second call = %q, %v; want the retained new access token", got, err)
+	}
+	if r.count() != 1 {
+		t.Errorf("Refresh called %d times; want exactly 1 (the old pair must not be reused)", r.count())
+	}
+	stored, err := v.LoadTokens(bg, uid)
+	if err != nil || stored.Refresh() != "R1" {
+		t.Errorf("stored = %v, %v; want the rotated pair persisted", stored, err)
+	}
+	// 保存できたら保持は捨てる（次は DB から読む）。
+	m.mu.Lock()
+	n := len(m.pending)
+	m.mu.Unlock()
+	if n != 0 {
+		t.Errorf("pending entries = %d; want 0 after a successful save", n)
+	}
+}
+
+func TestManagerKeepsPendingWhilePersistKeepsFailing(t *testing.T) {
+	r := &fakeRefresher{fn: func(context.Context, string, int) (*redmine.TokenSet, error) {
+		return tokenSet("A1", "R1", t0.Add(time.Hour)), nil
+	}}
+	m, v, uid := newManager(t, r)
+	m.persistRetryDelay = time.Millisecond
+	bg := context.Background()
+	_ = v.SaveTokens(bg, uid, tokenSet("A0", "R0", t0.Add(-time.Minute)))
+	m.save = func(context.Context, string, *redmine.TokenSet) error { return errors.New("disk full") }
+	for i := 0; i < 2; i++ {
+		if _, err := m.AccessToken(bg, uid); !errors.Is(err, ErrPersistFailed) {
+			t.Fatalf("call %d err = %v; want ErrPersistFailed", i, err)
+		}
+	}
+	if r.count() != 1 {
+		t.Errorf("Refresh called %d times; want 1 (retry the save, not the rotation)", r.count())
+	}
+}
+
+func TestManagerDropsPendingWhenStoredPairChanged(t *testing.T) {
+	// 保存に失敗したあとで利用者が再ログインした場合、保持していた組は古い。
+	// 新しいログインの組を上書きしてはならない。
+	r := &fakeRefresher{fn: func(context.Context, string, int) (*redmine.TokenSet, error) {
+		return tokenSet("A1", "R1", t0.Add(time.Hour)), nil
+	}}
+	m, v, uid := newManager(t, r)
+	m.persistRetryDelay = time.Millisecond
+	bg := context.Background()
+	_ = v.SaveTokens(bg, uid, tokenSet("A0", "R0", t0.Add(-time.Minute)))
+	real := m.save
+	m.save = func(context.Context, string, *redmine.TokenSet) error { return errors.New("disk full") }
+	if _, err := m.AccessToken(bg, uid); !errors.Is(err, ErrPersistFailed) {
+		t.Fatalf("err = %v; want ErrPersistFailed", err)
+	}
+	m.save = real
+	if err := v.SaveTokens(bg, uid, tokenSet("A9", "R9", t0.Add(2*time.Hour))); err != nil { // 再ログイン
+		t.Fatal(err)
+	}
+	got, err := m.AccessToken(bg, uid)
+	if err != nil || got != "A9" {
+		t.Fatalf("got %q, %v; want the re-login's access token", got, err)
+	}
+	if stored, _ := v.LoadTokens(bg, uid); stored == nil || stored.Refresh() != "R9" {
+		t.Errorf("stored refresh = %v; the stale pending pair overwrote the re-login", stored)
+	}
+}

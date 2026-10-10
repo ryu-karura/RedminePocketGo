@@ -237,3 +237,24 @@ func (s *Store) DeleteExpiredOAuthStates(ctx context.Context, now time.Time) err
 	}
 	return nil
 }
+
+// ListOAuthTokenUserIDs はトークンの組を持つ利用者 ID を返す（孤児の掃除用）。
+func (s *Store) ListOAuthTokenUserIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT user_id FROM oauth_tokens")
+	if err != nil {
+		return nil, fmt.Errorf("store: OAuth トークン保持者の取得に失敗しました: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: OAuth トークン保持者の読み取りに失敗しました: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: OAuth トークン保持者の取得に失敗しました: %w", err)
+	}
+	return ids, nil
+}

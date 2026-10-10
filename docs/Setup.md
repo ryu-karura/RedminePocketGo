@@ -377,6 +377,12 @@ ProxyPassReverse / http://127.0.0.1:8090/
 
 HSTS は RedmineDocker のホスト Apache 設定が既に付与しています。
 
+Apache（`mod_proxy`）は転送時に `X-Forwarded-For` へ接続元 IP を追記します。
+rmapp はこのヘッダーを、直接の接続元が `trustedProxies`（既定はループ
+バックのみ）に含まれるときだけ信用してレート制限のキーにします。Apache を
+別ホストに置く場合は、そのアドレスを `server/config/config.yaml` の
+`trustedProxies` に追加してください。
+
 ---
 
 ## 10. サービスとして常駐させる（本番）

@@ -149,15 +149,24 @@ func run(out io.Writer, args []string) error {
 	})
 	tokens := credential.NewManager(vault, rmOAuth, time.Duration(cfg.Redmine.OAuth.RefreshSkewSeconds)*time.Second)
 
+	// ログイン完了とログアウト後始末が同じ利用者の組を取り合わないための排他。
+	userLocks := auth.NewUserLocks()
+
+	grantCleaner := &auth.GrantCleaner{
+		Store: st, Vault: vault, OAuth: rmOAuth, Logger: logger, Locks: userLocks,
+		IdleTimeout: time.Duration(cfg.Session.IdleTimeoutHours) * time.Hour,
+	}
+
 	// 認証: OAuth ログイン / コールバック（Design.md §3.3）と現在セッションの API。
 	stateTTL := time.Duration(cfg.Redmine.OAuth.StateTTLMinutes) * time.Minute
 	(&httpapi.OAuthHandler{
 		Login: auth.NewOAuthLogin(auth.OAuthLoginDeps{
-			Store: st, Vault: vault, OAuth: rmOAuth, Identity: rmClient, Sessions: sessions, StateTTL: stateTTL,
+			Store: st, Vault: vault, OAuth: rmOAuth, Identity: rmClient, Sessions: sessions, StateTTL: stateTTL, Locks: userLocks, Revoker: rmOAuth, Logger: logger,
 		}),
 		Sessions:          sessions,
 		Limiter:           auth.NewRateLimiter(5, 60*time.Second),
 		Logger:            logger,
+		TrustedProxies:    cfg.TrustedProxyNets(),
 		SessionCookieName: cfg.Session.CookieName,
 		StateCookieName:   "rmapp_oauth_state",
 		StateCookiePath:   cfg.BaseURL + "/api/auth/",
@@ -169,7 +178,7 @@ func run(out io.Writer, args []string) error {
 		Sessions: sessions,
 		Users:    st,
 		Grants:   st,
-		Cleanup:  &auth.GrantCleaner{Store: st, Vault: vault, OAuth: rmOAuth, Logger: logger},
+		Cleanup:  grantCleaner,
 		Logger:   logger,
 
 		CookieName: cfg.Session.CookieName,
@@ -217,6 +226,9 @@ func run(out io.Writer, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// 無操作・絶対期限でセッションを失った利用者の付与を Redmine 側でも失効させる。
+	go sweepGrants(ctx, grantCleaner, grantSweepInterval)
+
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("rmapp starting", "listen", cfg.Listen, "version", version)
@@ -231,5 +243,23 @@ func run(out io.Writer, args []string) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
+	}
+}
+
+// grantSweepInterval は孤児になった OAuth 付与の掃除間隔。
+const grantSweepInterval = time.Hour
+
+// sweepGrants は起動直後と interval ごとに SweepOrphans を呼ぶ。ctx の終了で止まる。
+func sweepGrants(ctx context.Context, c *auth.GrantCleaner, interval time.Duration) {
+	c.SweepOrphans(ctx)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			c.SweepOrphans(ctx)
+		}
 	}
 }

@@ -21,7 +21,6 @@ func (f *fakeRevoker) Revoke(_ context.Context, token, hint string) error {
 
 type cleanerEnv struct {
 	*loginEnv
-	rev     *fakeRevoker
 	cleaner *GrantCleaner
 	userID  string
 }
@@ -39,10 +38,10 @@ func newCleanerEnv(t *testing.T) *cleanerEnv {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	rev := &fakeRevoker{}
-	c := &GrantCleaner{Store: e.st, Vault: e.vault, OAuth: rev}
+	rev := e.rev
+	c := &GrantCleaner{Store: e.st, Vault: e.vault, OAuth: rev, Locks: e.locks, IdleTimeout: time.Hour}
 	c.now = func() time.Time { return loginT0 }
-	return &cleanerEnv{loginEnv: e, rev: rev, cleaner: c, userID: u.ID}
+	return &cleanerEnv{loginEnv: e, cleaner: c, userID: u.ID}
 }
 
 func (e *cleanerEnv) addSession(t *testing.T) {

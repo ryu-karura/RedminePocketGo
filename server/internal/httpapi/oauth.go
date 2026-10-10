@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -35,6 +36,9 @@ type OAuthHandler struct {
 	Sessions OAuthSessions
 	Limiter  Limiter
 	Logger   *slog.Logger
+
+	// TrustedProxies は X-Forwarded-For を信用する接続元（config trustedProxies）。
+	TrustedProxies []*net.IPNet
 
 	SessionCookieName string
 
@@ -79,7 +83,7 @@ func (h *OAuthHandler) stateCookie(value string, maxAge int) *http.Cookie {
 }
 
 func (h *OAuthHandler) login(w http.ResponseWriter, r *http.Request) {
-	key := limiterKey(r)
+	key := clientIP(r, h.TrustedProxies)
 	if h.Limiter != nil && !h.Limiter.Allow(key) {
 		h.redirectError(w, r, "rate_limited")
 		return
@@ -101,7 +105,7 @@ func (h *OAuthHandler) callback(w http.ResponseWriter, r *http.Request) {
 	if h.stateCookieMatches(r, q.Get("state")) {
 		http.SetCookie(w, h.stateCookie("", -1))
 	}
-	key := limiterKey(r)
+	key := clientIP(r, h.TrustedProxies)
 	if h.Limiter != nil && !h.Limiter.Allow(key) {
 		h.redirectError(w, r, "rate_limited")
 		return
